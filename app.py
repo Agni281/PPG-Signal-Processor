@@ -31,3 +31,17 @@ clean_data, noisy_data = gen_data()
 
 clean_tensor = torch.FloatTensor(clean_data).unsqueeze(1) 
 noisy_tensor = torch.FloatTensor(noisy_data).unsqueeze(1) 
+
+class SignalDenoisingAutoencoder(nn.Module): 
+  def __init__(self):
+    super(SignalDenoisingAutoender, self).__init__()
+    self.encoder = nn.Sequential(
+      nn.Conv1d(1,16, kernel_size =5, stride =2, padding =2),
+      nn.ReLU(),
+      nn.Conv1d(16,32,kernel_size=5, stride =2, padding=2),
+      nn.ReLU()
+    )
+    self.decoder = nn.Sequential(
+      nn.ConvTranspose1d(32, 16, kernel_size=5, stride =2, padding = 2, output_padding =1), 
+      nn.ReLU(),
+      nn.Cond

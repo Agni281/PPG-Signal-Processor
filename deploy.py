@@ -77,7 +77,7 @@ def train_model():
 
 model = train_model()
 
-st.sidebar.header("⚙️ Signal Noise Parameters")
+st.sidebar.header("Signal Noise Parameters")
 st.sidebar.markdown("Simulate environmental and device interference:")
 
 noise_amp = st.sidebar.slider("Noise Amplitude", 0.0, 0.8, 0.3, 0.05)

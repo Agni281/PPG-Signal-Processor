@@ -107,13 +107,13 @@ def run_interactive_pipeline(noise_level, hum_freq, drift_level):
     interval_variance = np.var(peak_intervals) if len(peak_intervals) > 0 else 0
     
 
-    print(f"📊 SNR: {snr_db:.2f} dB | 🎯 Confidence: {confidence_score:.2f}% | 📍 Peaks Detected: {len(peaks)}")
+    print(f"SNR: {snr_db:.2f} dB | Confidence: {confidence_score:.2f}% | Peaks Detected: {len(peaks)}")
     if confidence_score < 70.0:
-        triage_msg = "Conclusion: ⚠️ UNRELIABLE DATA - Noise too high for diagnostic safety."
+        triage_msg = "Conclusion: UNRELIABLE DATA - Noise too high for diagnostic safety."
     elif interval_variance > 2.0:
-        triage_msg = "Conclusion: 🚨 ALERT - Potential Arrhythmia / Irregular Rhythm Detected."
+        triage_msg = "Conclusion: ALERT - Potential Arrhythmia / Irregular Rhythm Detected."
     else:
-        triage_msg = "Conclusion: ✅ HEALTHY - Normal Sinus Rhythm."
+        triage_msg = "Conclusion: HEALTHY - Normal Sinus Rhythm."
     print(triage_msg)
     
 
@@ -140,7 +140,7 @@ def run_interactive_pipeline(noise_level, hum_freq, drift_level):
 
 
 
-print("--- LIVE PPG SIGNAL DASHBOARD ---")
+print("--- PPG SIGNAL DASHBOARD ---")
 interact(
     run_interactive_pipeline,
     noise_level=FloatSlider(min=0.0, max=0.8, step=0.05, value=0.3, description='Noise Amp'),

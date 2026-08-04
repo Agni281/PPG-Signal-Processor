@@ -9,9 +9,9 @@ import matplotlib.pyplot as plt
 
 st.set_page_config(page_title="Remote PPG Signal De-Noiser", layout="wide")
 
-st.title("🩺 Remote Biosensor Signal De-Noiser")
+st.title("Remote Biosensor Signal De-Noiser")
 st.markdown("""
-**An Edge-AI & Signal Processing Pipeline for Rural Healthcare** *Built by Divyagni Shivashok & Charvee Trehan*
+**An Edge-AI & Signal Processing Pipeline for Rural Healthcare**
 """)
 
 class SignalDenoisingAutoencoder(nn.Module):

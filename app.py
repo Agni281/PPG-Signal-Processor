@@ -126,7 +126,7 @@ def process_and_plot(hum_freq=50, drift_level=0.2, noise_amp=0.3):
     mse_score = np.mean((reconstructed - true_clean) ** 2)
     raw_ncc = np.corrcoef(reconstructed, true_clean)[0, 1]
     ncc_score = 0.0 if np.isnan(raw_ncc) else float(raw_ncc)
-    confidence_score = max(0.0, ncc_score * np.exp(-2.0 * mse_score)) * 100.0
+    confidence_score = max(0.0, ncc_score * np.exp(-1.0 * mse_score)) * 100.0
 
     peaks, _ = signal.find_peaks(reconstructed, distance=int(FS * 0.4), prominence=0.15)
     if len(peaks) > 1:

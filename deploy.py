@@ -4,8 +4,7 @@ import scipy.signal as signal
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
+import matplotlib.pyplot as plt
 
 st.set_page_config(page_title="Remote PPG Signal De-Noiser", layout="wide")
 
@@ -14,27 +13,43 @@ st.markdown("""
 **An Edge-AI & Signal Processing Pipeline for Rural Healthcare**
 """)
 
-# --- 1. MODEL DEFINITION ---
-class SignalDenoisingAutoencoder(nn.Module):
+# --- 1. UPGRADED MODEL DEFINITION (1D U-NET WITH SKIP CONNECTIONS) ---
+class UNet1DSignalDenoiser(nn.Module):
     def __init__(self):
-        super(SignalDenoisingAutoencoder, self).__init__()
-        self.encoder = nn.Sequential(
+        super(UNet1DSignalDenoiser, self).__init__()
+        # Encoder Stage 1
+        self.enc1 = nn.Sequential(
             nn.Conv1d(1, 16, kernel_size=5, stride=2, padding=2),
-            nn.ReLU(),
+            nn.BatchNorm1d(16),
+            nn.LeakyReLU(0.2)
+        )
+        # Encoder Stage 2
+        self.enc2 = nn.Sequential(
             nn.Conv1d(16, 32, kernel_size=5, stride=2, padding=2),
+            nn.BatchNorm1d(32),
+            nn.LeakyReLU(0.2)
+        )
+        # Decoder Stage 2
+        self.dec2 = nn.Sequential(
+            nn.ConvTranspose1d(32, 16, kernel_size=5, stride=2, padding=2, output_padding=1),
+            nn.BatchNorm1d(16),
             nn.ReLU()
         )
-        self.decoder = nn.Sequential(
-            nn.ConvTranspose1d(32, 16, kernel_size=5, stride=2, padding=2, output_padding=1),
-            nn.ReLU(),
-            nn.ConvTranspose1d(16, 1, kernel_size=5, stride=2, padding=2, output_padding=1),
+        # Decoder Stage 1 (Combines skipped encoder 1 features)
+        self.dec1 = nn.Sequential(
+            nn.ConvTranspose1d(32, 1, kernel_size=5, stride=2, padding=2, output_padding=1),
             nn.Sigmoid()
         )
 
     def forward(self, x):
-        x = self.encoder(x)
-        x = self.decoder(x)
-        return x
+        e1 = self.enc1(x)                   # Shape: [B, 16, L/2]
+        e2 = self.enc2(e1)                  # Shape: [B, 32, L/4]
+        
+        d2 = self.dec2(e2)                  # Shape: [B, 16, L/2]
+        d2_cat = torch.cat([d2, e1], dim=1) # Skip Connection: Concatenate [B, 32, L/2]
+        
+        out = self.dec1(d2_cat)             # Shape: [B, 1, L]
+        return out
 
 # --- 2. DATA LOADERS & FILTERING ---
 def butter_bandpass_filter(data, lowcut=0.5, highcut=4.0, fs=50.0, order=2):
@@ -54,7 +69,7 @@ def load_real_ppg_data(length=200):
 
 @st.cache_resource
 def train_model():
-    """Trains the base PyTorch autoencoder model once and caches it."""
+    """Trains the 1D U-Net PyTorch model with augmented noise profiles."""
     np.random.seed(42)
     torch.manual_seed(42)
     
@@ -62,12 +77,22 @@ def train_model():
     base_signal = load_real_ppg_data(length)
     clean_dataset, noisy_dataset = [], []
     
-    for _ in range(500):
-        shift = np.random.randint(-10, 10)
+    # Generate 800 training examples with diverse noise profiles
+    for _ in range(800):
+        shift = np.random.randint(-15, 15)
         clean_wave = np.roll(base_signal, shift)
         
         t = np.linspace(0, 4 * np.pi, length)
-        noisy_wave = clean_wave + 0.2 * np.sin(50 * t) + 0.15 * np.sin(0.2 * t) + np.random.normal(0, 0.1, length)
+        # Random noise parameters to force robust learning
+        n_amp = np.random.uniform(0.1, 0.5)
+        grid_freq = np.random.choice([50, 60, 20, 80])
+        drift_amp = np.random.uniform(0.05, 0.3)
+        
+        hf_noise = n_amp * np.sin(grid_freq * t)
+        drift = drift_amp * np.sin(0.3 * t)
+        gauss = np.random.normal(0, n_amp * 0.25, length)
+        
+        noisy_wave = clean_wave + hf_noise + drift + gauss
         noisy_wave = (noisy_wave - np.min(noisy_wave)) / (np.max(noisy_wave) - np.min(noisy_wave) + 1e-8)
         
         clean_dataset.append(clean_wave)
@@ -76,18 +101,26 @@ def train_model():
     clean_tensor = torch.FloatTensor(np.array(clean_dataset)).unsqueeze(1)
     noisy_tensor = torch.FloatTensor(np.array(noisy_dataset)).unsqueeze(1)
     
-    model = SignalDenoisingAutoencoder()
+    model = UNet1DSignalDenoiser()
     criterion = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.005)
+    optimizer = optim.Adam(model.parameters(), lr=0.003)
     
-    for epoch in range(40):
+    for epoch in range(50):
         permutation = torch.randperm(noisy_tensor.size(0))
         for i in range(0, noisy_tensor.size(0), 32):
             indices = permutation[i:i+32]
             optimizer.zero_grad()
             outputs = model(noisy_tensor[indices])
-            loss = criterion(outputs, clean_tensor[indices])
-            loss.backward()
+            
+            # Combined Loss: Standard MSE + First derivative loss (preserves sharp peaks)
+            mse_loss = criterion(outputs, clean_tensor[indices])
+            diff_pred = outputs[:, :, 1:] - outputs[:, :, :-1]
+            diff_true = clean_tensor[indices][:, :, 1:] - clean_tensor[indices][:, :, :-1]
+            grad_loss = criterion(diff_pred, diff_true)
+            
+            total_loss = mse_loss + 0.5 * grad_loss
+            
+            total_loss.backward()
             optimizer.step()
             
     return model
@@ -171,25 +204,28 @@ with tabs[0]:
     else:
         st.success(f" **Conclusion: HEALTHY** — Stable rhythm reconstructed (AI Confidence: {confidence_score:.1f}%).")
 
-    # Interactive Plotly Charts
-    fig = make_subplots(rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.06,
-                        subplot_titles=("Stage 1: Raw Telemetry Stream (Rural Clinic)",
-                                        "Stage 2: SciPy Bandpass Filtered (0.5 - 4.0 Hz)",
-                                        "Stage 3: AI Reconstruction & Peak Detection",
-                                        "Stage 4: Ground Truth Reference"))
+    fig, axs = plt.subplots(4, 1, figsize=(12, 10))
 
-    fig.add_trace(go.Scatter(y=raw_noisy, mode='lines', name='Raw Noisy', line=dict(color='crimson')), row=1, col=1)
-    fig.add_trace(go.Scatter(y=filtered_signal, mode='lines', name='Bandpass Filtered', line=dict(color='darkorange')), row=2, col=1)
-    fig.add_trace(go.Scatter(y=reconstructed, mode='lines', name='AI Denoised', line=dict(color='royalblue', width=2)), row=3, col=1)
-    
+    axs[0].plot(raw_noisy, color='crimson', label='Raw Noisy Signal')
+    axs[0].set_title("Stage 1: Raw Telemetry Stream (Rural Clinic)")
+    axs[0].legend(loc="upper right")
+
+    axs[1].plot(filtered_signal, color='darkorange', label='SciPy Bandpass Filtered (0.5 - 4.0 Hz)')
+    axs[1].set_title("Stage 2: Classical Baseline & High-Pass Filter")
+    axs[1].legend(loc="upper right")
+
+    axs[2].plot(reconstructed, color='royalblue', linewidth=2, label='AI Denoised Signal (1D U-Net)')
     if len(peaks) > 0:
-        fig.add_trace(go.Scatter(x=peaks, y=reconstructed[peaks], mode='markers', name='Systolic Peaks',
-                                 marker=dict(color='darkmagenta', size=10, symbol='diamond')), row=3, col=1)
-        
-    fig.add_trace(go.Scatter(y=true_clean, mode='lines', name='Ground Truth', line=dict(color='forestgreen', dash='dash')), row=4, col=1)
+        axs[2].scatter(peaks, reconstructed[peaks], color='darkmagenta', s=80, zorder=5, label=f'Systolic Peaks ({len(peaks)})')
+    axs[2].set_title(f"Stage 3: AI Reconstructed Wave & Peak Detection (Confidence: {confidence_score:.1f}%)")
+    axs[2].legend(loc="upper right")
 
-    fig.update_layout(height=850, showlegend=True)
-    st.plotly_chart(fig, use_container_width=True)
+    axs[3].plot(true_clean, color='forestgreen', linestyle='--', label='Ground Truth Reference')
+    axs[3].set_title("Ground Truth Signal Reference")
+    axs[3].legend(loc="upper right")
+
+    plt.tight_layout()
+    st.pyplot(fig)
 
 with tabs[1]:
     st.subheader("Model Evaluation Across Multiple Test Samples")
@@ -226,6 +262,9 @@ with tabs[1]:
         eval_col2.metric("Average Test MSE", f"{np.mean(eval_mses):.4f}")
         eval_col3.metric("Mean Estimated BPM", f"{np.mean(bpm_list):.1f}" if len(bpm_list) > 0 else "N/A")
         
-        fig_eval = go.Figure(data=[go.Histogram(x=eval_confidences, nbinsx=15, marker_color='royalblue')])
-        fig_eval.update_layout(title="Distribution of AI Confidence Scores (%)", xaxis_title="Confidence Score (%)", yaxis_title="Sample Count")
-        st.plotly_chart(fig_eval, use_container_width=True)
+        fig_eval, ax_eval = plt.subplots(figsize=(10, 3))
+        ax_eval.hist(eval_confidences, bins=15, color='royalblue', edgecolor='black')
+        ax_eval.set_title("Distribution of AI Confidence Scores (%)")
+        ax_eval.set_xlabel("Confidence Score (%)")
+        ax_eval.set_ylabel("Sample Count")
+        st.pyplot(fig_eval)

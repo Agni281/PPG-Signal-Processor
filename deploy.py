@@ -166,22 +166,22 @@ else:
     true_clean = load_real_ppg_data(length)
 
 # Add interference simulation
-high_freq_noise = noise_amp * np.sin(2 * np.pi * hum_freq * t)
-baseline_drift = drift_level * np.sin(2 * np.pi * 0.2 * t)
-random_noise = np.random.normal(0, noise_amp * 0.3, length)
+high_freq_noise = noise_amp * np.sin(hum_freq * t)
+baseline_drift = drift_level * np.sin(0.2 * t)
+random_noise = np.random.normal(0, noise_amp * 0.5, length)
 
 raw_noisy = true_clean + high_freq_noise + baseline_drift + random_noise
 raw_noisy = (raw_noisy - np.min(raw_noisy)) / (np.max(raw_noisy) - np.min(raw_noisy) + 1e-8)
 
-# 1. APPLY SCI-PY BANDPASS FILTER FIRST
-filtered_signal = butter_bandpass_filter(raw_noisy, lowcut=0.5, highcut=4.0, fs=50.0)
-filtered_signal = (filtered_signal - np.min(filtered_signal)) / (np.max(filtered_signal) - np.min(filtered_signal) + 1e-8)
-
-# 2. Pass `filtered_signal` into PyTorch instead of `raw_noisy`
+# 2. Reconstruct signal with PyTorch
 model.eval()
 with torch.no_grad():
-    input_sample = torch.FloatTensor(filtered_signal).unsqueeze(0).unsqueeze(0)  # <--- HERE
+    input_sample = torch.FloatTensor(raw_noisy).unsqueeze(0).unsqueeze(0)
     reconstructed = model(input_sample).squeeze().numpy()
+
+# 3. Use your original pure correlation metric for Confidence %
+correlation_matrix = np.corrcoef(reconstructed, true_clean)
+confidence_score = correlation_matrix[0, 1] * 100
 
 # Performance Metrics
 mse_score = np.mean((reconstructed - true_clean) ** 2)

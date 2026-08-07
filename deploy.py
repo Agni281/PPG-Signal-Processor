@@ -173,14 +173,14 @@ random_noise = np.random.normal(0, noise_amp * 0.3, length)
 raw_noisy = true_clean + high_freq_noise + baseline_drift + random_noise
 raw_noisy = (raw_noisy - np.min(raw_noisy)) / (np.max(raw_noisy) - np.min(raw_noisy) + 1e-8)
 
-# Bandpass Filter Stage
-filtered_signal = butter_bandpass_filter(raw_noisy, lowcut=0.5, highcut=4.0, fs=FS)
+# 1. APPLY SCI-PY BANDPASS FILTER FIRST
+filtered_signal = butter_bandpass_filter(raw_noisy, lowcut=0.5, highcut=4.0, fs=50.0)
 filtered_signal = (filtered_signal - np.min(filtered_signal)) / (np.max(filtered_signal) - np.min(filtered_signal) + 1e-8)
 
-# AI Autoencoder Denoising Stage
+# 2. Pass `filtered_signal` into PyTorch instead of `raw_noisy`
 model.eval()
 with torch.no_grad():
-    input_sample = torch.FloatTensor(raw_noisy).unsqueeze(0).unsqueeze(0)
+    input_sample = torch.FloatTensor(filtered_signal).unsqueeze(0).unsqueeze(0)  # <--- HERE
     reconstructed = model(input_sample).squeeze().numpy()
 
 # Performance Metrics
@@ -188,7 +188,7 @@ mse_score = np.mean((reconstructed - true_clean) ** 2)
 raw_ncc = np.corrcoef(reconstructed, true_clean)[0, 1]
 ncc_score = 0.0 if np.isnan(raw_ncc) else float(raw_ncc)
 
-confidence_score = max(0.0, ncc_score * np.exp(-2.0 * mse_score)) * 100.0
+confidence_score = max(0.0, ncc_score * np.exp(-1.0 * mse_score)) * 100.0
 
 signal_power = np.mean(true_clean ** 2)
 noise_power = np.mean((raw_noisy - true_clean) ** 2)

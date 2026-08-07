@@ -162,7 +162,7 @@ correlation_matrix = np.corrcoef(reconstructed, true_clean)
 raw_corr = correlation_matrix[0, 1]
 confidence_score = 0.0 if np.isnan(raw_corr) else float(raw_corr) * 100.0
 
-# Peak Detection on Reconstructed Wave
+# Peak Detection
 peaks, _ = signal.find_peaks(reconstructed, distance=int(FS * 0.4), prominence=0.15)
 
 # Output Signal Quality Metrics
@@ -186,6 +186,17 @@ with tabs[0]:
     col4.metric("Detected Peaks", len(peaks))
 
     st.markdown("---")
+
+    # RHYTHM & SIGNAL QUALITY ASSESSMENT
+    peak_intervals = np.diff(peaks)
+    interval_variance = np.var(peak_intervals) if len(peak_intervals) > 0 else 0
+
+    if confidence_score < 70.0:
+        st.error("🚨 **Conclusion: UNRELIABLE DATA** — Environmental noise too severe for feature assessment.")
+    elif interval_variance > 0.05:
+        st.warning("⚠️ **Conclusion: ALERT** — Irregular pulse timing / high variability detected.")
+    else:
+        st.success("✅ **Conclusion: HEALTHY** — Stable sinus rhythm detected.")
 
     fig, axs = plt.subplots(4, 1, figsize=(12, 10))
 
@@ -245,4 +256,4 @@ with tabs[1]:
         ax_eval.set_title("Distribution of Signal Quality Scores (%)")
         ax_eval.set_xlabel("Reconstruction Accuracy (%)")
         ax_eval.set_ylabel("Sample Count")
-        st.pyplot(fig_eval) 
+        st.pyplot(fig_eval)

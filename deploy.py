@@ -6,7 +6,7 @@ import torch.nn as nn
 import torch.optim as optim
 import matplotlib.pyplot as plt
 
-st.set_page_config(page_title="Remote Sensor Signal De-Noiser", layout="wide")
+st.set_page_config(page_title="Remote Biosensor Signal De-Noiser", layout="wide")
 
 st.title("Remote Biosensor Signal De-Noiser")
 st.markdown("""
@@ -162,6 +162,9 @@ correlation_matrix = np.corrcoef(reconstructed, true_clean)
 raw_corr = correlation_matrix[0, 1]
 confidence_score = 0.0 if np.isnan(raw_corr) else float(raw_corr) * 100.0
 
+# Peak Detection on Reconstructed Wave
+peaks, _ = signal.find_peaks(reconstructed, distance=int(FS * 0.4), prominence=0.15)
+
 # Output Signal Quality Metrics
 denoised_noise_power = np.mean((reconstructed - true_clean) ** 2)
 output_snr_db = 10 * np.log10(signal_power / denoised_noise_power) if denoised_noise_power > 0 else 100.0
@@ -176,10 +179,11 @@ with tabs[0]:
     else:
         st.info(" **Source:** Using Built-in Benchmark Synthetic Reference Wave")
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     col1.metric("Input SNR", f"{snr_db:.2f} dB")
     col2.metric("AI Quality Score", f"{confidence_score:.1f}%")
     col3.metric("SNR Gain", f"+{snr_improvement:.2f} dB")
+    col4.metric("Detected Peaks", len(peaks))
 
     st.markdown("---")
 
@@ -194,6 +198,8 @@ with tabs[0]:
     axs[1].legend(loc="upper right")
 
     axs[2].plot(reconstructed, color='royalblue', linewidth=2, label='AI Reconstructed Signal')
+    if len(peaks) > 0:
+        axs[2].scatter(peaks, reconstructed[peaks], color='darkmagenta', s=80, zorder=5, label=f'Detected Peaks ({len(peaks)})')
     axs[2].set_title(f"Stage 3: AI Reconstructed Wave (Quality Score: {confidence_score:.1f}%)")
     axs[2].legend(loc="upper right")
 
@@ -210,6 +216,7 @@ with tabs[1]:
     
     if st.button("Run Batch Evaluation"):
         eval_confidences = []
+        peaks_found = []
         
         for _ in range(50):
             shift = np.random.randint(-15, 15)
@@ -225,12 +232,17 @@ with tabs[1]:
             raw_c = np.corrcoef(rec, sample_clean)[0, 1]
             conf = 0.0 if np.isnan(raw_c) else float(raw_c) * 100.0
             eval_confidences.append(conf)
+            
+            pks, _ = signal.find_peaks(rec, distance=int(FS * 0.4), prominence=0.15)
+            peaks_found.append(len(pks))
 
-        st.metric("Mean Quality Score", f"{np.mean(eval_confidences):.1f}%")
+        eval_col1, eval_col2 = st.columns(2)
+        eval_col1.metric("Mean Quality Score", f"{np.mean(eval_confidences):.1f}%")
+        eval_col2.metric("Mean Peaks Counted", f"{np.mean(peaks_found):.1f}")
         
         fig_eval, ax_eval = plt.subplots(figsize=(10, 3))
         ax_eval.hist(eval_confidences, bins=15, color='royalblue', edgecolor='black')
         ax_eval.set_title("Distribution of Signal Quality Scores (%)")
         ax_eval.set_xlabel("Reconstruction Accuracy (%)")
         ax_eval.set_ylabel("Sample Count")
-        st.pyplot(fig_eval)
+        st.pyplot(fig_eval) 

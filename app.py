@@ -106,11 +106,13 @@ def run_interactive_pipeline(noise_level, hum_freq, drift_level):
     raw_corr = correlation_matrix[0, 1]
     confidence_score = 0.0 if np.isnan(raw_corr) else float(raw_corr) * 100.0
     
+    peaks, _ = signal.find_peaks(reconstructed, distance=int(FS * 0.4), prominence=0.15)
+    
     denoised_noise_power = np.mean((reconstructed - true_clean) ** 2)
     output_snr_db = 10 * np.log10(signal_power / denoised_noise_power) if denoised_noise_power > 0 else 100.0
     snr_improvement = output_snr_db - snr_db
 
-    print(f"Input SNR: {snr_db:.2f} dB | AI Quality Score: {confidence_score:.2f}% | SNR Improvement: +{snr_improvement:.2f} dB")
+    print(f"Input SNR: {snr_db:.2f} dB | AI Quality Score: {confidence_score:.2f}% | SNR Improvement: +{snr_improvement:.2f} dB | Peaks Found: {len(peaks)}")
     
     plt.figure(figsize=(12, 9))
     
@@ -126,6 +128,8 @@ def run_interactive_pipeline(noise_level, hum_freq, drift_level):
     
     plt.subplot(4, 1, 3)
     plt.plot(reconstructed, color='royalblue', linewidth=2, label='AI Denoised Signal')
+    if len(peaks) > 0:
+        plt.scatter(peaks, reconstructed[peaks], color='darkmagenta', s=90, zorder=5, label=f'Detected Peaks ({len(peaks)})')
     plt.title(f'AI Reconstructed Signal (Quality Score: {confidence_score:.1f}%)')
     plt.legend(loc='upper right')
     

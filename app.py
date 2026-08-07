@@ -40,7 +40,7 @@ def butter_bandpass_filter(data, lowcut=0.5, highcut=4.0, fs=50.0, order=2):
     return signal.filtfilt(b, a, data)
 
 def generate_base_dataset(num_samples=500, length=200):
-    t = np.linspace(0, 10 * np.pi, length)  # 75 BPM baseline wave
+    t = np.linspace(0, 4 * np.pi, length)
     clean_dataset, noisy_dataset = [], []
     for _ in range(num_samples):
         clean_wave = np.sin(t) + 0.5 * np.sin(2 * t) + 0.2 * np.sin(3 * t)
@@ -53,7 +53,7 @@ def generate_base_dataset(num_samples=500, length=200):
         noisy_dataset.append(noisy_wave)
     return np.array(clean_dataset), np.array(noisy_dataset)
 
-print("Training base model for interactive dashboard...")
+print("Training base model...")
 clean_data, noisy_data = generate_base_dataset()
 clean_tensor = torch.FloatTensor(clean_data).unsqueeze(1)
 noisy_tensor = torch.FloatTensor(noisy_data).unsqueeze(1)
@@ -78,7 +78,7 @@ print("Model Ready!\n")
 def run_interactive_pipeline(noise_level, hum_freq, drift_level):
     FS = 50.0
     length = 200
-    t = np.linspace(0, 10 * np.pi, length)  # ~75 BPM waveform
+    t = np.linspace(0, 4 * np.pi, length)
     
     true_clean = np.sin(t) + 0.5 * np.sin(2 * t) + 0.2 * np.sin(3 * t)
     true_clean = (true_clean - np.min(true_clean)) / (np.max(true_clean) - np.min(true_clean) + 1e-8)
@@ -106,31 +106,11 @@ def run_interactive_pipeline(noise_level, hum_freq, drift_level):
     raw_corr = correlation_matrix[0, 1]
     confidence_score = 0.0 if np.isnan(raw_corr) else float(raw_corr) * 100.0
     
-    peaks, _ = signal.find_peaks(reconstructed, distance=int(FS * 0.4), prominence=0.15)
-    if len(peaks) > 1:
-        peak_intervals_sec = np.diff(peaks) / FS
-        heart_rate_bpm = 60.0 / np.mean(peak_intervals_sec)
-        interval_variance = np.var(peak_intervals_sec)
-    else:
-        heart_rate_bpm = 0
-        interval_variance = 0.0
-    
-    print(f"SNR: {snr_db:.2f} dB | AI Confidence: {confidence_score:.2f}% | Peaks: {len(peaks)} | Heart Rate: {heart_rate_bpm:.1f} BPM")
-    
-    # CLINICAL TRIAGE MESSAGING
-    if confidence_score < 70.0:
-        triage_msg = "Conclusion: UNRELIABLE DATA - Signal quality too low for diagnostic safety."
-    elif heart_rate_bpm == 0:
-        triage_msg = "Conclusion: NO PULSE DETECTED - Unable to identify systolic peaks."
-    elif heart_rate_bpm < 50.0:
-        triage_msg = f"Conclusion: ALERT (Bradycardia) - Low Heart Rate ({heart_rate_bpm:.1f} BPM)."
-    elif heart_rate_bpm > 100.0:
-        triage_msg = f"Conclusion: ALERT (Tachycardia) - High Heart Rate ({heart_rate_bpm:.1f} BPM)."
-    elif interval_variance > 0.05:
-        triage_msg = f"Conclusion: ALERT (Arrhythmia) - Irregular pulse rhythm detected."
-    else:
-        triage_msg = f"Conclusion: HEALTHY - Normal sinus rhythm ({heart_rate_bpm:.1f} BPM)."
-    print(triage_msg)
+    denoised_noise_power = np.mean((reconstructed - true_clean) ** 2)
+    output_snr_db = 10 * np.log10(signal_power / denoised_noise_power) if denoised_noise_power > 0 else 100.0
+    snr_improvement = output_snr_db - snr_db
+
+    print(f"Input SNR: {snr_db:.2f} dB | AI Quality Score: {confidence_score:.2f}% | SNR Improvement: +{snr_improvement:.2f} dB")
     
     plt.figure(figsize=(12, 9))
     
@@ -146,9 +126,7 @@ def run_interactive_pipeline(noise_level, hum_freq, drift_level):
     
     plt.subplot(4, 1, 3)
     plt.plot(reconstructed, color='royalblue', linewidth=2, label='AI Denoised Signal')
-    if len(peaks) > 0:
-        plt.scatter(peaks, reconstructed[peaks], color='darkmagenta', s=90, zorder=5, label='Systolic Peaks')
-    plt.title(f'AI Reconstructed Signal (Confidence: {confidence_score:.1f}%)')
+    plt.title(f'AI Reconstructed Signal (Quality Score: {confidence_score:.1f}%)')
     plt.legend(loc='upper right')
     
     plt.subplot(4, 1, 4)
@@ -159,7 +137,7 @@ def run_interactive_pipeline(noise_level, hum_freq, drift_level):
     plt.tight_layout()
     plt.show()
 
-print("--- PPG SIGNAL DASHBOARD ---")
+print("--- INTERACTIVE SIGNAL DENOISING DASHBOARD ---")
 interact(
     run_interactive_pipeline,
     noise_level=FloatSlider(min=0.0, max=0.8, step=0.05, value=0.3, description='Noise Amp'),

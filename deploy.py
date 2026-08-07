@@ -6,11 +6,11 @@ import torch.nn as nn
 import torch.optim as optim
 import matplotlib.pyplot as plt
 
-st.set_page_config(page_title="Remote PPG Signal De-Noiser", layout="wide")
+st.set_page_config(page_title="Remote Sensor Signal De-Noiser", layout="wide")
 
 st.title("Remote Biosensor Signal De-Noiser")
 st.markdown("""
-**An Edge-AI & Signal Processing Pipeline for Rural Healthcare**
+**An Edge-AI & Signal Processing Pipeline for High-Noise Sensor Telemetry**
 """)
 
 # --- 1. MODEL DEFINITION ---
@@ -37,7 +37,7 @@ class SignalDenoisingAutoencoder(nn.Module):
 
 # --- 2. DATA LOADERS & FILTERING ---
 def butter_bandpass_filter(data, lowcut=0.5, highcut=4.0, fs=50.0, order=2):
-    """Bandpass filter to eliminate baseline wander (<0.5Hz) and high frequency noise (>4Hz)."""
+    """Bandpass filter to eliminate baseline wander and high-frequency noise."""
     nyq = 0.5 * fs
     low = lowcut / nyq
     high = highcut / nyq
@@ -45,9 +45,9 @@ def butter_bandpass_filter(data, lowcut=0.5, highcut=4.0, fs=50.0, order=2):
     return signal.filtfilt(b, a, data)
 
 @st.cache_data
-def load_default_ppg_data(length=200):
-    """Generates a benchmark physiological PPG waveform (~75 BPM resting pulse)."""
-    t = np.linspace(0, 10 * np.pi, length)  # 5 beats over 4 seconds = 75 BPM
+def load_default_signal(length=200):
+    """Generates a benchmark reference wave."""
+    t = np.linspace(0, 4 * np.pi, length)
     clean_wave = np.sin(t) + 0.5 * np.sin(2 * t) + 0.2 * np.sin(3 * t)
     return (clean_wave - np.min(clean_wave)) / (np.max(clean_wave) - np.min(clean_wave) + 1e-8)
 
@@ -58,7 +58,7 @@ def train_model():
     torch.manual_seed(42)
     
     length = 200
-    t = np.linspace(0, 10 * np.pi, length)
+    t = np.linspace(0, 4 * np.pi, length)
     clean_dataset, noisy_dataset = [], []
     
     for _ in range(500):
@@ -93,25 +93,24 @@ def train_model():
 model = train_model()
 
 # --- 3. SIDEBAR CONTROLS & FILE UPLOADER ---
-st.sidebar.header("1. Upload Custom PPG Signal")
+st.sidebar.header("1. Upload Custom Sensor Signal")
 uploaded_file = st.sidebar.file_uploader(
     "Upload 1D CSV/TXT File", 
     type=["csv", "txt"],
-    help="Upload a file containing single-column numeric PPG sensor readings."
+    help="Upload a file containing single-column numeric sensor readings."
 )
 
 st.sidebar.markdown("---")
-st.sidebar.header("2. Synthetic Noise Parameters")
-st.sidebar.markdown("Simulate environmental and device interference:")
+st.sidebar.header("2. Noise Simulation Parameters")
 
 noise_amp = st.sidebar.slider("Noise Amplitude", 0.0, 0.8, 0.3, 0.05)
-hum_freq = st.sidebar.slider("Grid Hum Frequency (Hz)", 10, 100, 50, 10)
-drift_level = st.sidebar.slider("Baseline Drift (Breathing)", 0.0, 0.5, 0.2, 0.05)
+hum_freq = st.sidebar.slider("Power Line Hum (Hz)", 10, 100, 50, 10)
+drift_level = st.sidebar.slider("Baseline Drift", 0.0, 0.5, 0.2, 0.05)
 
 # --- 4. DATA PROCESSING PIPELINE ---
 FS = 50.0  # Sampling frequency in Hz
 length = 200
-t = np.linspace(0, 10 * np.pi, length)  # Generates 75 BPM baseline wave
+t = np.linspace(0, 4 * np.pi, length)
 
 is_custom_file = False
 
@@ -128,12 +127,12 @@ if uploaded_file is not None:
             
         true_clean = (true_clean - np.min(true_clean)) / (np.max(true_clean) - np.min(true_clean) + 1e-8)
         is_custom_file = True
-        st.sidebar.success("Custom PPG Signal Loaded!")
+        st.sidebar.success("Custom Signal Loaded!")
     except Exception as e:
         st.sidebar.error(f"Error loading file: {e}. Defaulting to benchmark signal.")
-        true_clean = load_default_ppg_data(length)
+        true_clean = load_default_signal(length)
 else:
-    true_clean = load_default_ppg_data(length)
+    true_clean = load_default_signal(length)
 
 # Add synthetic noise
 high_freq_noise = noise_amp * np.sin(hum_freq * t)
@@ -158,82 +157,59 @@ with torch.no_grad():
     input_sample = torch.FloatTensor(raw_noisy).unsqueeze(0).unsqueeze(0)
     reconstructed = model(input_sample).squeeze().numpy()
 
-# Confidence Score (Pearson Correlation)
+# Reconstruction Correlation Score
 correlation_matrix = np.corrcoef(reconstructed, true_clean)
 raw_corr = correlation_matrix[0, 1]
 confidence_score = 0.0 if np.isnan(raw_corr) else float(raw_corr) * 100.0
 
-# Dynamic Peak Detection & BPM Computation
-peaks, _ = signal.find_peaks(reconstructed, distance=int(FS * 0.4), prominence=0.15)
-if len(peaks) > 1:
-    peak_intervals_sec = np.diff(peaks) / FS
-    mean_interval = np.mean(peak_intervals_sec)
-    heart_rate_bpm = 60.0 / mean_interval if mean_interval > 0 else 0
-    interval_variance = np.var(peak_intervals_sec)
-else:
-    heart_rate_bpm = 0
-    interval_variance = 0.0
+# Output Signal Quality Metrics
+denoised_noise_power = np.mean((reconstructed - true_clean) ** 2)
+output_snr_db = 10 * np.log10(signal_power / denoised_noise_power) if denoised_noise_power > 0 else 100.0
+snr_improvement = output_snr_db - snr_db
 
 # --- 5. DASHBOARD DISPLAY ---
-tabs = st.tabs(["Single Signal Analysis", "Multi-Sample Evaluation Suite"])
+tabs = st.tabs(["Single Signal Analysis", "Batch Performance Suite"])
 
 with tabs[0]:
     if is_custom_file:
-        st.info(" **Source:** Processing Custom Uploaded PPG Stream")
+        st.info(" **Source:** Processing Custom Uploaded Signal Stream")
     else:
-        st.info(" **Source:** Using Built-in Benchmark Physiological PPG Wave (~75 BPM)")
+        st.info(" **Source:** Using Built-in Benchmark Synthetic Reference Wave")
 
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3 = st.columns(3)
     col1.metric("Input SNR", f"{snr_db:.2f} dB")
-    col2.metric("AI Confidence", f"{confidence_score:.1f}%")
-    col3.metric("Detected Peaks", f"{len(peaks)}")
-    col4.metric("Heart Rate", f"{heart_rate_bpm:.1f} BPM" if heart_rate_bpm > 0 else "N/A")
+    col2.metric("AI Quality Score", f"{confidence_score:.1f}%")
+    col3.metric("SNR Gain", f"+{snr_improvement:.2f} dB")
 
     st.markdown("---")
 
-    # CLINICAL TRIAGE ASSESSMENT
-    if confidence_score < 70.0:
-        st.error(f"🚨 **Conclusion: UNRELIABLE DATA** — Signal quality too low for diagnostic assessment (AI Confidence: {confidence_score:.1f}%).")
-    elif heart_rate_bpm == 0:
-        st.error("⚠️ **Conclusion: NO PULSE DETECTED** — Unable to identify clear systolic peaks.")
-    elif heart_rate_bpm < 50.0:
-        st.warning(f"⚠️ **Conclusion: ALERT (Bradycardia)** — Abnormally low heart rate detected ({heart_rate_bpm:.1f} BPM). Normal range is 60–100 BPM.")
-    elif heart_rate_bpm > 100.0:
-        st.warning(f"⚠️ **Conclusion: ALERT (Tachycardia)** — Abnormally high heart rate detected ({heart_rate_bpm:.1f} BPM). Normal range is 60–100 BPM.")
-    elif interval_variance > 0.05:
-        st.warning(f"⚠️ **Conclusion: ALERT (Arrhythmia)** — High heart rate variability / irregular pulse interval detected ({heart_rate_bpm:.1f} BPM).")
-    else:
-        st.success(f"✅ **Conclusion: HEALTHY** — Normal sinus rhythm detected ({heart_rate_bpm:.1f} BPM).")
-
     fig, axs = plt.subplots(4, 1, figsize=(12, 10))
 
-    axs[0].plot(raw_noisy, color='crimson', label='Raw Noisy Signal')
-    axs[0].set_title("Stage 1: Raw Telemetry Stream (Rural Clinic)")
+    axs[0].plot(raw_noisy, color='crimson', label='Raw Noisy Input')
+    axs[0].set_title("Stage 1: Raw Telemetry Stream")
     axs[0].legend(loc="upper right")
 
     axs[1].plot(filtered_signal, color='darkorange', label='SciPy Bandpass Filtered (0.5 - 4.0 Hz)')
-    axs[1].set_title("Stage 2: Classical Baseline & High-Pass Filter")
+    axs[1].set_title("Stage 2: Classical Bandpass Filter")
     axs[1].legend(loc="upper right")
 
-    axs[2].plot(reconstructed, color='royalblue', linewidth=2, label='AI Denoised Signal')
-    if len(peaks) > 0:
-        axs[2].scatter(peaks, reconstructed[peaks], color='darkmagenta', s=80, zorder=5, label=f'Systolic Peaks ({len(peaks)})')
-    axs[2].set_title(f"Stage 3: AI Reconstructed Wave & Feature Extraction (Confidence: {confidence_score:.1f}%)")
+    axs[2].plot(reconstructed, color='royalblue', linewidth=2, label='AI Reconstructed Signal')
+    axs[2].set_title(f"Stage 3: AI Reconstructed Wave (Quality Score: {confidence_score:.1f}%)")
     axs[2].legend(loc="upper right")
 
     axs[3].plot(true_clean, color='forestgreen', linestyle='--', label='Ground Truth Reference')
-    axs[3].set_title("Stage 4: Ground Truth Signal Reference")
+    axs[3].set_title("Stage 4: Ground Truth Reference Signal")
     axs[3].legend(loc="upper right")
 
     plt.tight_layout()
     st.pyplot(fig)
 
 with tabs[1]:
-    st.subheader("Model Evaluation Across Multiple Test Samples")
-    st.markdown("Evaluates the pipeline across 50 test iterations under current noise settings.")
+    st.subheader("Pipeline Performance Across Multiple Iterations")
+    st.markdown("Runs 50 automated tests under current noise configurations.")
     
     if st.button("Run Batch Evaluation"):
-        eval_confidences, bpm_list = [], []
+        eval_confidences = []
         
         for _ in range(50):
             shift = np.random.randint(-15, 15)
@@ -249,18 +225,12 @@ with tabs[1]:
             raw_c = np.corrcoef(rec, sample_clean)[0, 1]
             conf = 0.0 if np.isnan(raw_c) else float(raw_c) * 100.0
             eval_confidences.append(conf)
-            
-            pks, _ = signal.find_peaks(rec, distance=int(FS * 0.4), prominence=0.15)
-            if len(pks) > 1:
-                bpm_list.append(60.0 / (np.mean(np.diff(pks)) / FS))
 
-        eval_col1, eval_col2 = st.columns(2)
-        eval_col1.metric("Mean AI Confidence", f"{np.mean(eval_confidences):.1f}%")
-        eval_col2.metric("Mean Estimated BPM", f"{np.mean(bpm_list):.1f}" if len(bpm_list) > 0 else "N/A")
+        st.metric("Mean Quality Score", f"{np.mean(eval_confidences):.1f}%")
         
         fig_eval, ax_eval = plt.subplots(figsize=(10, 3))
         ax_eval.hist(eval_confidences, bins=15, color='royalblue', edgecolor='black')
-        ax_eval.set_title("Distribution of AI Confidence Scores (%)")
-        ax_eval.set_xlabel("Confidence Score (%)")
+        ax_eval.set_title("Distribution of Signal Quality Scores (%)")
+        ax_eval.set_xlabel("Reconstruction Accuracy (%)")
         ax_eval.set_ylabel("Sample Count")
         st.pyplot(fig_eval)

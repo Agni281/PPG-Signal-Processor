@@ -192,11 +192,12 @@ with tabs[0]:
     interval_variance = np.var(peak_intervals) if len(peak_intervals) > 0 else 0
 
     if confidence_score < 70.0:
-        st.error("🚨 **Conclusion: UNRELIABLE DATA** — Environmental noise too severe for feature assessment.")
-    elif interval_variance > 0.05:
-        st.warning("⚠️ **Conclusion: ALERT** — Irregular pulse timing / high variability detected.")
+        st.error(" **Conclusion: UNRELIABLE DATA** — Environmental noise too severe for diagnostic assessment.")
+    elif interval_variance > 2.0:
+        st.warning(" **Conclusion: ALERT** — High Heart Rate Variability / Potential Arrhythmia detected.")
     else:
-        st.success("✅ **Conclusion: HEALTHY** — Stable sinus rhythm detected.")
+        st.success(" **Conclusion: HEALTHY** — Stable sinus rhythm detected.")
+
 
     fig, axs = plt.subplots(4, 1, figsize=(12, 10))
 

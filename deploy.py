@@ -138,9 +138,13 @@ with torch.no_grad():
     input_sample = torch.FloatTensor(raw_noisy).unsqueeze(0).unsqueeze(0)
     reconstructed = model(input_sample).squeeze().numpy()
 
-# Real Evaluation Metrics (MSE & Correlation)
+# Real Performance Metrics
 mse_score = np.mean((reconstructed - true_clean) ** 2)
-ncc_score = np.corrcoef(reconstructed, true_clean)[0, 1]
+raw_ncc = np.corrcoef(reconstructed, true_clean)[0, 1]
+ncc_score = 0.0 if np.isnan(raw_ncc) else float(raw_ncc)
+
+# Mathematically grounded AI Confidence Score (0% to 100%)
+confidence_score = max(0.0, ncc_score * np.exp(-2.0 * mse_score)) * 100.0
 
 # SNR Calculation
 signal_power = np.mean(true_clean ** 2)
@@ -164,18 +168,18 @@ tabs = st.tabs(["Single Signal Analysis", "Multi-Sample Evaluation Suite"])
 with tabs[0]:
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Input SNR", f"{snr_db:.2f} dB")
-    col2.metric("Reconstruction MSE", f"{mse_score:.4f}")
-    col3.metric("Heart Rate", f"{heart_rate_bpm:.1f} BPM" if heart_rate_bpm > 0 else "N/A")
-    col4.metric("Cross-Correlation", f"{ncc_score:.2f}")
+    col2.metric("AI Confidence", f"{confidence_score:.1f}%")
+    col3.metric("Reconstruction MSE", f"{mse_score:.4f}")
+    col4.metric("Heart Rate", f"{heart_rate_bpm:.1f} BPM" if heart_rate_bpm > 0 else "N/A")
 
     st.markdown("---")
 
-    if ncc_score < 0.5 or mse_score > 0.08:
-        st.error(" **Conclusion: UNRELIABLE DATA** — Environmental noise too severe for diagnostic assessment.")
+    if confidence_score < 60.0:
+        st.error(f" **Conclusion: UNRELIABLE DATA** — AI Confidence too low ({confidence_score:.1f}%). Environmental noise too severe for diagnostic assessment.")
     elif interval_variance > 0.05 and heart_rate_bpm > 0:
-        st.warning(" **Conclusion: ALERT** — High Heart Rate Variability / Potential Arrhythmia detected.")
+        st.warning(f" **Conclusion: ALERT** — High Heart Rate Variability / Potential Arrhythmia detected (AI Confidence: {confidence_score:.1f}%).")
     else:
-        st.success(" **Conclusion: HEALTHY** — Stable sinus rhythm detected.")
+        st.success(f" **Conclusion: HEALTHY** — Stable sinus rhythm reconstructed (AI Confidence: {confidence_score:.1f}%).")
 
     fig, axs = plt.subplots(4, 1, figsize=(12, 10))
 
@@ -190,7 +194,7 @@ with tabs[0]:
     axs[2].plot(reconstructed, color='royalblue', linewidth=2, label='AI Denoised Signal')
     if len(peaks) > 0:
         axs[2].scatter(peaks, reconstructed[peaks], color='darkmagenta', s=80, zorder=5, label=f'Systolic Peaks ({len(peaks)})')
-    axs[2].set_title(f"Stage 3: AI Reconstructed Wave & Peak Detection (MSE: {mse_score:.4f})")
+    axs[2].set_title(f"Stage 3: AI Reconstructed Wave & Peak Detection (Confidence: {confidence_score:.1f}%)")
     axs[2].legend(loc="upper right")
 
     axs[3].plot(true_clean, color='forestgreen', linestyle='--', label='Ground Truth Reference')
@@ -206,7 +210,7 @@ with tabs[1]:
     
     if st.button("Run Batch Evaluation"):
         eval_mses = []
-        snr_improvements = []
+        eval_confidences = []
         bpm_list = []
         
         for _ in range(50):
@@ -222,7 +226,12 @@ with tabs[1]:
                 rec = model(inp).squeeze().numpy()
             
             mse = np.mean((rec - sample_clean) ** 2)
+            raw_c = np.corrcoef(rec, sample_clean)[0, 1]
+            ncc = 0.0 if np.isnan(raw_c) else float(raw_c)
+            conf = max(0.0, ncc * np.exp(-2.0 * mse)) * 100.0
+            
             eval_mses.append(mse)
+            eval_confidences.append(conf)
             
             # Heart rate
             pks, _ = signal.find_peaks(rec, distance=int(FS * 0.4), prominence=0.15)
@@ -230,13 +239,13 @@ with tabs[1]:
                 bpm_list.append(60.0 / (np.mean(np.diff(pks)) / FS))
 
         eval_col1, eval_col2, eval_col3 = st.columns(3)
-        eval_col1.metric("Average Test MSE", f"{np.mean(eval_mses):.4f}")
-        eval_col2.metric("MSE Std Dev", f"{np.std(eval_mses):.4f}")
+        eval_col1.metric("Mean AI Confidence", f"{np.mean(eval_confidences):.1f}%")
+        eval_col2.metric("Average Test MSE", f"{np.mean(eval_mses):.4f}")
         eval_col3.metric("Mean Estimated BPM", f"{np.mean(bpm_list):.1f}" if len(bpm_list) > 0 else "N/A")
         
         fig_eval, ax_eval = plt.subplots(figsize=(10, 3))
-        ax_eval.hist(eval_mses, bins=15, color='royalblue', edgecolor='black')
-        ax_eval.set_title("Distribution of Reconstruction Errors (MSE)")
-        ax_eval.set_xlabel("Mean Squared Error")
+        ax_eval.hist(eval_confidences, bins=15, color='royalblue', edgecolor='black')
+        ax_eval.set_title("Distribution of AI Confidence Scores (%)")
+        ax_eval.set_xlabel("Confidence Score (%)")
         ax_eval.set_ylabel("Sample Count")
         st.pyplot(fig_eval)

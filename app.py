@@ -40,14 +40,14 @@ def butter_bandpass_filter(data, lowcut=0.5, highcut=4.0, fs=50.0, order=2):
     return signal.filtfilt(b, a, data)
 
 def generate_base_dataset(num_samples=500, length=200):
-    t = np.linspace(0, 4 * np.pi, length)
+    t = np.linspace(0, 10 * np.pi, length)  # 75 BPM baseline wave
     clean_dataset, noisy_dataset = [], []
     for _ in range(num_samples):
         clean_wave = np.sin(t) + 0.5 * np.sin(2 * t) + 0.2 * np.sin(3 * t)
-        clean_wave = (clean_wave - np.min(clean_wave)) / (np.max(clean_wave) - np.min(clean_wave))
+        clean_wave = (clean_wave - np.min(clean_wave)) / (np.max(clean_wave) - np.min(clean_wave) + 1e-8)
         
         noisy_wave = clean_wave + 0.3 * np.sin(50 * t) + 0.2 * np.sin(0.2 * t) + np.random.normal(0, 0.15, length)
-        noisy_wave = (noisy_wave - np.min(noisy_wave)) / (np.max(noisy_wave) - np.min(noisy_wave))
+        noisy_wave = (noisy_wave - np.min(noisy_wave)) / (np.max(noisy_wave) - np.min(noisy_wave) + 1e-8)
         
         clean_dataset.append(clean_wave)
         noisy_dataset.append(noisy_wave)
@@ -78,10 +78,10 @@ print("Model Ready!\n")
 def run_interactive_pipeline(noise_level, hum_freq, drift_level):
     FS = 50.0
     length = 200
-    t = np.linspace(0, 4 * np.pi, length)
+    t = np.linspace(0, 10 * np.pi, length)  # ~75 BPM waveform
     
     true_clean = np.sin(t) + 0.5 * np.sin(2 * t) + 0.2 * np.sin(3 * t)
-    true_clean = (true_clean - np.min(true_clean)) / (np.max(true_clean) - np.min(true_clean))
+    true_clean = (true_clean - np.min(true_clean)) / (np.max(true_clean) - np.min(true_clean) + 1e-8)
     
     high_freq_noise = noise_level * np.sin(hum_freq * t)
     baseline_drift = drift_level * np.sin(0.2 * t)
@@ -115,13 +115,21 @@ def run_interactive_pipeline(noise_level, hum_freq, drift_level):
         heart_rate_bpm = 0
         interval_variance = 0.0
     
-    print(f"SNR: {snr_db:.2f} dB | AI Confidence: {confidence_score:.2f}% | Peaks Detected: {len(peaks)} | Heart Rate: {heart_rate_bpm:.1f} BPM")
+    print(f"SNR: {snr_db:.2f} dB | AI Confidence: {confidence_score:.2f}% | Peaks: {len(peaks)} | Heart Rate: {heart_rate_bpm:.1f} BPM")
+    
+    # CLINICAL TRIAGE MESSAGING
     if confidence_score < 70.0:
-        triage_msg = "Conclusion: UNRELIABLE DATA - Noise too high for diagnostic safety."
-    elif interval_variance > 0.05 and heart_rate_bpm > 0:
-        triage_msg = "Conclusion: ALERT - Potential Arrhythmia / Irregular Rhythm Detected."
+        triage_msg = "Conclusion: UNRELIABLE DATA - Signal quality too low for diagnostic safety."
+    elif heart_rate_bpm == 0:
+        triage_msg = "Conclusion: NO PULSE DETECTED - Unable to identify systolic peaks."
+    elif heart_rate_bpm < 50.0:
+        triage_msg = f"Conclusion: ALERT (Bradycardia) - Low Heart Rate ({heart_rate_bpm:.1f} BPM)."
+    elif heart_rate_bpm > 100.0:
+        triage_msg = f"Conclusion: ALERT (Tachycardia) - High Heart Rate ({heart_rate_bpm:.1f} BPM)."
+    elif interval_variance > 0.05:
+        triage_msg = f"Conclusion: ALERT (Arrhythmia) - Irregular pulse rhythm detected."
     else:
-        triage_msg = "Conclusion: HEALTHY - Normal Sinus Rhythm."
+        triage_msg = f"Conclusion: HEALTHY - Normal sinus rhythm ({heart_rate_bpm:.1f} BPM)."
     print(triage_msg)
     
     plt.figure(figsize=(12, 9))
@@ -133,7 +141,7 @@ def run_interactive_pipeline(noise_level, hum_freq, drift_level):
     
     plt.subplot(4, 1, 2)
     plt.plot(filtered_signal, color='darkorange', label='SciPy Bandpass Filtered')
-    plt.title('Stage 2: Classical Bandpass Filter')
+    plt.title('Stage 2: Classical Bandpass Filter (0.5 - 4.0 Hz)')
     plt.legend(loc='upper right')
     
     plt.subplot(4, 1, 3)

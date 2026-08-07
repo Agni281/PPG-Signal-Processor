@@ -46,10 +46,10 @@ def butter_bandpass_filter(data, lowcut=0.5, highcut=4.0, fs=50.0, order=2):
 
 @st.cache_data
 def load_default_ppg_data(length=200):
-    """Generates a benchmark physiological PPG waveform."""
-    t = np.linspace(0, 4 * np.pi, length)
+    """Generates a benchmark physiological PPG waveform (~75 BPM resting pulse)."""
+    t = np.linspace(0, 10 * np.pi, length)  # 5 beats over 4 seconds = 75 BPM
     clean_wave = np.sin(t) + 0.5 * np.sin(2 * t) + 0.2 * np.sin(3 * t)
-    return (clean_wave - np.min(clean_wave)) / (np.max(clean_wave) - np.min(clean_wave))
+    return (clean_wave - np.min(clean_wave)) / (np.max(clean_wave) - np.min(clean_wave) + 1e-8)
 
 @st.cache_resource
 def train_model():
@@ -58,15 +58,15 @@ def train_model():
     torch.manual_seed(42)
     
     length = 200
-    t = np.linspace(0, 4 * np.pi, length)
+    t = np.linspace(0, 10 * np.pi, length)
     clean_dataset, noisy_dataset = [], []
     
     for _ in range(500):
         clean_wave = np.sin(t) + 0.5 * np.sin(2 * t) + 0.2 * np.sin(3 * t)
-        clean_wave = (clean_wave - np.min(clean_wave)) / (np.max(clean_wave) - np.min(clean_wave))
+        clean_wave = (clean_wave - np.min(clean_wave)) / (np.max(clean_wave) - np.min(clean_wave) + 1e-8)
         
         noisy_wave = clean_wave + 0.3 * np.sin(50 * t) + 0.2 * np.sin(0.2 * t) + np.random.normal(0, 0.15, length)
-        noisy_wave = (noisy_wave - np.min(noisy_wave)) / (np.max(noisy_wave) - np.min(noisy_wave))
+        noisy_wave = (noisy_wave - np.min(noisy_wave)) / (np.max(noisy_wave) - np.min(noisy_wave) + 1e-8)
         
         clean_dataset.append(clean_wave)
         noisy_dataset.append(noisy_wave)
@@ -111,7 +111,7 @@ drift_level = st.sidebar.slider("Baseline Drift (Breathing)", 0.0, 0.5, 0.2, 0.0
 # --- 4. DATA PROCESSING PIPELINE ---
 FS = 50.0  # Sampling frequency in Hz
 length = 200
-t = np.linspace(0, 4 * np.pi, length)
+t = np.linspace(0, 10 * np.pi, length)  # Generates 75 BPM baseline wave
 
 is_custom_file = False
 
@@ -128,14 +128,14 @@ if uploaded_file is not None:
             
         true_clean = (true_clean - np.min(true_clean)) / (np.max(true_clean) - np.min(true_clean) + 1e-8)
         is_custom_file = True
-        st.sidebar.success(" Custom PPG Signal Loaded!")
+        st.sidebar.success("Custom PPG Signal Loaded!")
     except Exception as e:
         st.sidebar.error(f"Error loading file: {e}. Defaulting to benchmark signal.")
         true_clean = load_default_ppg_data(length)
 else:
     true_clean = load_default_ppg_data(length)
 
-# Add interference
+# Add synthetic noise
 high_freq_noise = noise_amp * np.sin(hum_freq * t)
 baseline_drift = drift_level * np.sin(0.2 * t)
 random_noise = np.random.normal(0, noise_amp * 0.5, length)
@@ -143,7 +143,7 @@ random_noise = np.random.normal(0, noise_amp * 0.5, length)
 raw_noisy = true_clean + high_freq_noise + baseline_drift + random_noise
 raw_noisy = (raw_noisy - np.min(raw_noisy)) / (np.max(raw_noisy) - np.min(raw_noisy) + 1e-8)
 
-# Bandpass Filter Stage
+# Stage 2: Bandpass Filter
 filtered_signal = butter_bandpass_filter(raw_noisy, lowcut=0.5, highcut=4.0, fs=FS)
 filtered_signal = (filtered_signal - np.min(filtered_signal)) / (np.max(filtered_signal) - np.min(filtered_signal) + 1e-8)
 
@@ -152,7 +152,7 @@ signal_power = np.mean(true_clean ** 2)
 noise_power = np.mean((raw_noisy - true_clean) ** 2)
 snr_db = 10 * np.log10(signal_power / noise_power) if noise_power > 0 else 100.0
 
-# AI Model Inference
+# AI Inference
 model.eval()
 with torch.no_grad():
     input_sample = torch.FloatTensor(raw_noisy).unsqueeze(0).unsqueeze(0)
@@ -163,7 +163,7 @@ correlation_matrix = np.corrcoef(reconstructed, true_clean)
 raw_corr = correlation_matrix[0, 1]
 confidence_score = 0.0 if np.isnan(raw_corr) else float(raw_corr) * 100.0
 
-# Peak Detection & Heart Rate
+# Dynamic Peak Detection & BPM Computation
 peaks, _ = signal.find_peaks(reconstructed, distance=int(FS * 0.4), prominence=0.15)
 if len(peaks) > 1:
     peak_intervals_sec = np.diff(peaks) / FS
@@ -181,7 +181,7 @@ with tabs[0]:
     if is_custom_file:
         st.info(" **Source:** Processing Custom Uploaded PPG Stream")
     else:
-        st.info(" **Source:** Using Built-in Benchmark Physiological PPG Wave")
+        st.info(" **Source:** Using Built-in Benchmark Physiological PPG Wave (~75 BPM)")
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Input SNR", f"{snr_db:.2f} dB")
@@ -191,12 +191,19 @@ with tabs[0]:
 
     st.markdown("---")
 
+    # CLINICAL TRIAGE ASSESSMENT
     if confidence_score < 70.0:
-        st.error(f" **Conclusion: UNRELIABLE DATA** — Environmental noise too severe for diagnostic assessment (AI Confidence: {confidence_score:.1f}%).")
-    elif interval_variance > 0.05 and heart_rate_bpm > 0:
-        st.warning(f" **Conclusion: ALERT** — High Heart Rate Variability / Potential Arrhythmia detected (AI Confidence: {confidence_score:.1f}%).")
+        st.error(f"🚨 **Conclusion: UNRELIABLE DATA** — Signal quality too low for diagnostic assessment (AI Confidence: {confidence_score:.1f}%).")
+    elif heart_rate_bpm == 0:
+        st.error("⚠️ **Conclusion: NO PULSE DETECTED** — Unable to identify clear systolic peaks.")
+    elif heart_rate_bpm < 50.0:
+        st.warning(f"⚠️ **Conclusion: ALERT (Bradycardia)** — Abnormally low heart rate detected ({heart_rate_bpm:.1f} BPM). Normal range is 60–100 BPM.")
+    elif heart_rate_bpm > 100.0:
+        st.warning(f"⚠️ **Conclusion: ALERT (Tachycardia)** — Abnormally high heart rate detected ({heart_rate_bpm:.1f} BPM). Normal range is 60–100 BPM.")
+    elif interval_variance > 0.05:
+        st.warning(f"⚠️ **Conclusion: ALERT (Arrhythmia)** — High heart rate variability / irregular pulse interval detected ({heart_rate_bpm:.1f} BPM).")
     else:
-        st.success(f" **Conclusion: HEALTHY** — Stable rhythm detected (AI Confidence: {confidence_score:.1f}%).")
+        st.success(f"✅ **Conclusion: HEALTHY** — Normal sinus rhythm detected ({heart_rate_bpm:.1f} BPM).")
 
     fig, axs = plt.subplots(4, 1, figsize=(12, 10))
 

@@ -154,7 +154,7 @@ def run_interactive_pipeline(noise_level, hum_freq, drift_level):
     plt.tight_layout()
     plt.show()
 
-print("--- INTERACTIVE SIGNAL DENOISING DASHBOARD ---")
+print("--- PPG SIGNAL DASHBOARD ---")
 interact(
     run_interactive_pipeline,
     noise_level=FloatSlider(min=0.0, max=0.8, step=0.05, value=0.3, description='Noise Amp'),

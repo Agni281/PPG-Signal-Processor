@@ -6,11 +6,11 @@ import torch.nn as nn
 import torch.optim as optim
 import matplotlib.pyplot as plt
 
-st.set_page_config(page_title="Remote Biosensor Signal De-Noiser", layout="wide")
+st.set_page_config(page_title="Remote PPG Signal De-Noiser", layout="wide")
 
 st.title("Remote Biosensor Signal De-Noiser")
 st.markdown("""
-**An Edge-AI & Signal Processing Pipeline for High-Noise Sensor Telemetry**
+**An Edge-AI & Signal Processing Pipeline for Rural Healthcare**
 """)
 
 # --- 1. MODEL DEFINITION ---

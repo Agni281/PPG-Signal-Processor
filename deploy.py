@@ -13,45 +13,39 @@ st.markdown("""
 **An Edge-AI & Signal Processing Pipeline for Rural Healthcare**
 """)
 
-# --- 1. UPGRADED MODEL DEFINITION (1D U-NET WITH SKIP CONNECTIONS) ---
+# --- 1. MODEL DEFINITION (1D U-NET WITH SKIP CONNECTIONS) ---
 class UNet1DSignalDenoiser(nn.Module):
     def __init__(self):
         super(UNet1DSignalDenoiser, self).__init__()
-        # Encoder Stage 1
         self.enc1 = nn.Sequential(
             nn.Conv1d(1, 16, kernel_size=5, stride=2, padding=2),
             nn.BatchNorm1d(16),
             nn.LeakyReLU(0.2)
         )
-        # Encoder Stage 2
         self.enc2 = nn.Sequential(
             nn.Conv1d(16, 32, kernel_size=5, stride=2, padding=2),
             nn.BatchNorm1d(32),
             nn.LeakyReLU(0.2)
         )
-        # Decoder Stage 2
         self.dec2 = nn.Sequential(
             nn.ConvTranspose1d(32, 16, kernel_size=5, stride=2, padding=2, output_padding=1),
             nn.BatchNorm1d(16),
             nn.ReLU()
         )
-        # Decoder Stage 1 (Combines skipped encoder 1 features)
         self.dec1 = nn.Sequential(
             nn.ConvTranspose1d(32, 1, kernel_size=5, stride=2, padding=2, output_padding=1),
             nn.Sigmoid()
         )
 
     def forward(self, x):
-        e1 = self.enc1(x)                   # Shape: [B, 16, L/2]
-        e2 = self.enc2(e1)                  # Shape: [B, 32, L/4]
-        
-        d2 = self.dec2(e2)                  # Shape: [B, 16, L/2]
-        d2_cat = torch.cat([d2, e1], dim=1) # Skip Connection: Concatenate [B, 32, L/2]
-        
-        out = self.dec1(d2_cat)             # Shape: [B, 1, L]
+        e1 = self.enc1(x)
+        e2 = self.enc2(e1)
+        d2 = self.dec2(e2)
+        d2_cat = torch.cat([d2, e1], dim=1)
+        out = self.dec1(d2_cat)
         return out
 
-# --- 2. DATA LOADERS & FILTERING ---
+# --- 2. DATA PROCESSING & FILTERING ---
 def butter_bandpass_filter(data, lowcut=0.5, highcut=4.0, fs=50.0, order=2):
     """Bandpass filter to eliminate baseline wander (<0.5Hz) and high frequency noise (>4Hz)."""
     nyq = 0.5 * fs
@@ -62,14 +56,14 @@ def butter_bandpass_filter(data, lowcut=0.5, highcut=4.0, fs=50.0, order=2):
 
 @st.cache_data
 def load_real_ppg_data(length=200):
-    """Generates a realistic physiological PPG waveform baseline."""
+    """Generates a realistic physiological PPG benchmark waveform."""
     t = np.linspace(0, 4 * np.pi, length)
     wave = np.sin(t) + 0.35 * np.sin(2 * t) + 0.15 * np.cos(3 * t)
     return (wave - np.min(wave)) / (np.max(wave) - np.min(wave))
 
 @st.cache_resource
 def train_model():
-    """Trains the 1D U-Net PyTorch model with augmented noise profiles."""
+    """Trains the 1D U-Net PyTorch model once and caches it."""
     np.random.seed(42)
     torch.manual_seed(42)
     
@@ -77,13 +71,11 @@ def train_model():
     base_signal = load_real_ppg_data(length)
     clean_dataset, noisy_dataset = [], []
     
-    # Generate 800 training examples with diverse noise profiles
     for _ in range(800):
         shift = np.random.randint(-15, 15)
         clean_wave = np.roll(base_signal, shift)
         
         t = np.linspace(0, 4 * np.pi, length)
-        # Random noise parameters to force robust learning
         n_amp = np.random.uniform(0.1, 0.5)
         grid_freq = np.random.choice([50, 60, 20, 80])
         drift_amp = np.random.uniform(0.05, 0.3)
@@ -112,14 +104,12 @@ def train_model():
             optimizer.zero_grad()
             outputs = model(noisy_tensor[indices])
             
-            # Combined Loss: Standard MSE + First derivative loss (preserves sharp peaks)
             mse_loss = criterion(outputs, clean_tensor[indices])
             diff_pred = outputs[:, :, 1:] - outputs[:, :, :-1]
             diff_true = clean_tensor[indices][:, :, 1:] - clean_tensor[indices][:, :, :-1]
             grad_loss = criterion(diff_pred, diff_true)
             
             total_loss = mse_loss + 0.5 * grad_loss
-            
             total_loss.backward()
             optimizer.step()
             
@@ -127,23 +117,55 @@ def train_model():
 
 model = train_model()
 
-# --- 3. SIDEBAR CONTROLS ---
-st.sidebar.header("Signal Noise Parameters")
-st.sidebar.markdown("Simulate environmental and device interference:")
+# --- 3. SIDEBAR CONTROLS & FILE UPLOADER ---
+st.sidebar.header("1. Upload Custom PPG Signal")
+uploaded_file = st.sidebar.file_uploader(
+    "Upload 1D CSV/TXT File", 
+    type=["csv", "txt"],
+    help="Upload a file containing single-column numeric raw PPG sensor readings."
+)
+
+st.sidebar.markdown("---")
+st.sidebar.header("2. Synthetic Noise Parameters")
+st.sidebar.markdown("Add artificial noise (applies when using synthetic or uploaded signal):")
 
 noise_amp = st.sidebar.slider("Noise Amplitude", 0.0, 0.8, 0.3, 0.05)
 hum_freq = st.sidebar.slider("Grid Hum Frequency (Hz)", 10, 100, 50, 10)
 drift_level = st.sidebar.slider("Baseline Drift (Breathing)", 0.0, 0.5, 0.2, 0.05)
 
-# --- 4. DATA PROCESSING PIPELINE ---
+# --- 4. SIGNAL LOADING & INTERFERENCE PIPELINE ---
 FS = 50.0  # Sampling frequency in Hz
 length = 200
 t = np.linspace(0, length / FS, length)
 
-# Ground truth reference PPG
-true_clean = load_real_ppg_data(length)
+is_custom_file = False
 
-# Interference simulation
+if uploaded_file is not None:
+    try:
+        # Load raw numbers from uploaded file
+        raw_data = np.loadtxt(uploaded_file, delimiter=',')
+        
+        # Take the first column if multi-column CSV
+        if raw_data.ndim > 1:
+            raw_data = raw_data[:, 0]
+            
+        # Pad or trim to fit exact window length (200 samples)
+        if len(raw_data) >= length:
+            true_clean = raw_data[:length]
+        else:
+            true_clean = np.pad(raw_data, (0, length - len(raw_data)), mode='edge')
+            
+        # Normalize custom signal to [0, 1]
+        true_clean = (true_clean - np.min(true_clean)) / (np.max(true_clean) - np.min(true_clean) + 1e-8)
+        is_custom_file = True
+        st.sidebar.success(" Custom PPG Signal Loaded Successfully!")
+    except Exception as e:
+        st.sidebar.error(f"Error reading file: {e}. Falling back to default benchmark PPG.")
+        true_clean = load_real_ppg_data(length)
+else:
+    true_clean = load_real_ppg_data(length)
+
+# Add interference simulation
 high_freq_noise = noise_amp * np.sin(2 * np.pi * hum_freq * t)
 baseline_drift = drift_level * np.sin(2 * np.pi * 0.2 * t)
 random_noise = np.random.normal(0, noise_amp * 0.3, length)
@@ -166,15 +188,13 @@ mse_score = np.mean((reconstructed - true_clean) ** 2)
 raw_ncc = np.corrcoef(reconstructed, true_clean)[0, 1]
 ncc_score = 0.0 if np.isnan(raw_ncc) else float(raw_ncc)
 
-# AI Confidence Score (0% to 100%)
 confidence_score = max(0.0, ncc_score * np.exp(-2.0 * mse_score)) * 100.0
 
-# SNR Calculation
 signal_power = np.mean(true_clean ** 2)
 noise_power = np.mean((raw_noisy - true_clean) ** 2)
 snr_db = 10 * np.log10(signal_power / noise_power) if noise_power > 0 else 100.0
 
-# Heart Rate Calculation (BPM)
+# Heart Rate Calculation
 peaks, _ = signal.find_peaks(reconstructed, distance=int(FS * 0.4), prominence=0.15)
 if len(peaks) > 1:
     peak_intervals_sec = np.diff(peaks) / FS
@@ -189,6 +209,11 @@ else:
 tabs = st.tabs(["Single Signal Analysis", "Multi-Sample Evaluation Suite"])
 
 with tabs[0]:
+    if is_custom_file:
+        st.info(" **Source:** Processing Custom Uploaded PPG Stream")
+    else:
+        st.info(" **Source:** Using Built-in Benchmark Physiological PPG Wave")
+
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Input SNR", f"{snr_db:.2f} dB")
     col2.metric("AI Confidence", f"{confidence_score:.1f}%")
@@ -206,8 +231,8 @@ with tabs[0]:
 
     fig, axs = plt.subplots(4, 1, figsize=(12, 10))
 
-    axs[0].plot(raw_noisy, color='crimson', label='Raw Noisy Signal')
-    axs[0].set_title("Stage 1: Raw Telemetry Stream (Rural Clinic)")
+    axs[0].plot(raw_noisy, color='crimson', label='Raw Sensor Signal')
+    axs[0].set_title("Stage 1: Raw Telemetry Stream (Clinic Reading + Interference)")
     axs[0].legend(loc="upper right")
 
     axs[1].plot(filtered_signal, color='darkorange', label='SciPy Bandpass Filtered (0.5 - 4.0 Hz)')
@@ -220,8 +245,8 @@ with tabs[0]:
     axs[2].set_title(f"Stage 3: AI Reconstructed Wave & Peak Detection (Confidence: {confidence_score:.1f}%)")
     axs[2].legend(loc="upper right")
 
-    axs[3].plot(true_clean, color='forestgreen', linestyle='--', label='Ground Truth Reference')
-    axs[3].set_title("Ground Truth Signal Reference")
+    axs[3].plot(true_clean, color='forestgreen', linestyle='--', label='Original Input Signal Reference')
+    axs[3].set_title("Stage 4: Input Signal Baseline Reference")
     axs[3].legend(loc="upper right")
 
     plt.tight_layout()

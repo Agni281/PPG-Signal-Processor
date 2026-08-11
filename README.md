@@ -6,4 +6,4 @@ In remote clinics, medical equipment is low cost and poorly-shielded. When patie
 An intelligent signal processing pipeline that takes raw 1-dimensional streams of voltage readings and checks if the data salvagable. 
 1D Convolutional Autoencoder to reconstruct the clean heartbeat wave, calculates confidence in the cleanup, finds exact pulse peaks, and outputs a diagnostic conclusion. 
 
-Try it here: https://ppg-signal-proceappr-lahvgwy7wxkbqyy3afsbyr.streamlit.app/
+Try it here: (https://ppg-signal-proceappr-b5appmnqj2tmimeap572trp.streamlit.app/)

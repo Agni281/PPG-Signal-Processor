@@ -171,17 +171,14 @@ TARGET_LENGTH = 200
 duration = 4.0
 t = np.linspace(0, duration, TARGET_LENGTH)
 is_custom_file = False
+true_clean = None
 
 if data_source == "Upload Real PPG Stream" and uploaded_file is not None:
     try:
-        # Load full array
         full_signal = load_uploaded_signal(uploaded_file)
-        
-        # WINDOW SLICING: Slice 4 seconds worth of samples (FS * 4 seconds)
         window_size = int(FS * duration)
         
         if len(full_signal) > window_size:
-            # Let user select start second in sidebar if large file
             max_start_sec = int((len(full_signal) - window_size) / FS)
             start_sec = st.sidebar.slider("Window Start Offset (seconds)", 0, max(1, max_start_sec), 0)
             start_idx = int(start_sec * FS)
@@ -189,18 +186,30 @@ if data_source == "Upload Real PPG Stream" and uploaded_file is not None:
         else:
             raw_data = full_signal
 
-        # Resample chunk to 200 points for UNet
         if len(raw_data) != TARGET_LENGTH:
             raw_data = signal.resample(raw_data, TARGET_LENGTH)
             
-        true_clean = (raw_data - np.min(raw_data)) / (np.max(raw_data) - np.min(raw_data) + 1e-8)
+        # FIX: For real uploaded streams, use the raw signal directly WITHOUT adding synthetic noise!
+        raw_noisy = (raw_data - np.min(raw_data)) / (np.max(raw_data) - np.min(raw_data) + 1e-8)
         is_custom_file = True
         st.sidebar.success(f"Custom Stream Loaded! ({len(full_signal):,} total points)")
     except Exception as e:
         st.sidebar.error(f"Error parsing file: {e}. Reverting to Synthetic.")
+        # Fallback to synthetic if file fails
         true_clean = generate_synthetic_ppg(t, target_hr)
+        high_freq_noise = noise_amp * np.sin(2 * np.pi * hum_freq * t)
+        baseline_drift = drift_level * np.sin(2 * np.pi * 0.2 * t)
+        random_noise = np.random.normal(0, noise_amp * 0.5, TARGET_LENGTH)
+        raw_noisy = true_clean + high_freq_noise + baseline_drift + random_noise
+        raw_noisy = (raw_noisy - np.min(raw_noisy)) / (np.max(raw_noisy) - np.min(raw_noisy) + 1e-8)
 else:
+    # Synthetic mode applies synthetic sliders
     true_clean = generate_synthetic_ppg(t, target_hr)
+    high_freq_noise = noise_amp * np.sin(2 * np.pi * hum_freq * t)
+    baseline_drift = drift_level * np.sin(2 * np.pi * 0.2 * t)
+    random_noise = np.random.normal(0, noise_amp * 0.5, TARGET_LENGTH)
+    raw_noisy = true_clean + high_freq_noise + baseline_drift + random_noise
+    raw_noisy = (raw_noisy - np.min(raw_noisy)) / (np.max(raw_noisy) - np.min(raw_noisy) + 1e-8)
 
 # Corrupt signal with noise controls
 high_freq_noise = noise_amp * np.sin(2 * np.pi * hum_freq * t)

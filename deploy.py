@@ -118,6 +118,12 @@ def generate_synthetic_ppg(t, hr_bpm):
     signal_out = clean + dicrotic
     return (signal_out - np.min(signal_out)) / (np.max(signal_out) - np.min(signal_out) + 1e-8)
 
+def calculate_snr(clean_sig, noisy_sig):
+    noise = noisy_sig - clean_sig
+    p_signal = np.sum(clean_sig ** 2)
+    p_noise = np.sum(noise ** 2) + 1e-8
+    return 10 * np.log10(p_signal / p_noise)
+
 def butter_bandpass_filter(data, lowcut=0.5, highcut=4.0, fs=50.0, order=2):
     nyq = 0.5 * fs
     low, high = lowcut / nyq, highcut / nyq
@@ -222,13 +228,22 @@ else:
 # ==========================================
 # 7. DASHBOARD DISPLAY (RESTORED 4 SUBPLOTS)
 # ==========================================
-st.title("🫀 Remote PPG Signal Processing Engine")
+st.title("Remote PPG Signal Processing Engine")
 st.markdown("1D Convolutional U-Net Denoising for Optical Telemetry Streams")
 
-col1, col2, col3 = st.columns(3)
+if true_clean is not None:
+    snr_in = calculate_snr(true_clean, raw_noisy)
+    snr_out = calculate_snr(true_clean, reconstructed)
+    snr_gain = snr_out - snr_in
+    snr_str = f"+{snr_gain:.2f} dB"
+else:
+    snr_str = "N/A (Real Stream)"
+
+col1, col2, col3, col4 = st.columns(4)
 col1.metric("Signal Quality (SQI)", f"{sqi_score:.1f}%")
-col2.metric("Estimated Heart Rate", bpm_str)
-col3.metric("Detected Systolic Peaks", len(peaks))
+col2.metric("SNR Gain", snr_str)
+col3.metric("Estimated Heart Rate", bpm_str)
+col4.metric("Detected Peaks", len(peaks))
 
 # 4 Stacked Subplots
 fig = make_subplots(

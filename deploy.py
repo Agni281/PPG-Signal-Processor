@@ -9,46 +9,25 @@ import matplotlib.pyplot as plt
 st.set_page_config(page_title="Remote PPG Signal De-Noiser", layout="wide")
 
 st.title("Remote Biosensor Signal De-Noiser")
-st.markdown("""
-**An Edge-AI & Signal Processing Pipeline for Rural Healthcare**
-""")
+st.markdown("**An Edge-AI & Signal Processing Pipeline for Rural Healthcare**")
 
-# --- 1. MODEL DEFINITION (1D U-NET WITH SKIP CONNECTIONS) ---
+# --- 1. MODEL DEFINITION ---
 class SignalDenoisingUNet1D(nn.Module):
     def __init__(self):
         super(SignalDenoisingUNet1D, self).__init__()
-        
-        # Encoder Path
-        self.enc1 = nn.Sequential(
-            nn.Conv1d(1, 16, kernel_size=5, stride=2, padding=2),
-            nn.ReLU()
-        )
-        self.enc2 = nn.Sequential(
-            nn.Conv1d(16, 32, kernel_size=5, stride=2, padding=2),
-            nn.ReLU()
-        )
-        
-        # Decoder Path with Skip Connections
-        self.dec2 = nn.Sequential(
-            nn.ConvTranspose1d(32, 16, kernel_size=5, stride=2, padding=2, output_padding=1),
-            nn.ReLU()
-        )
-        self.dec1 = nn.Sequential(
-            nn.ConvTranspose1d(32, 1, kernel_size=5, stride=2, padding=2, output_padding=1),
-            nn.Sigmoid()
-        )
+        self.enc1 = nn.Sequential(nn.Conv1d(1, 16, kernel_size=5, stride=2, padding=2), nn.ReLU())
+        self.enc2 = nn.Sequential(nn.Conv1d(16, 32, kernel_size=5, stride=2, padding=2), nn.ReLU())
+        self.dec2 = nn.Sequential(nn.ConvTranspose1d(32, 16, kernel_size=5, stride=2, padding=2, output_padding=1), nn.ReLU())
+        self.dec1 = nn.Sequential(nn.ConvTranspose1d(32, 1, kernel_size=5, stride=2, padding=2, output_padding=1), nn.Sigmoid())
 
     def forward(self, x):
-        e1 = self.enc1(x)  # Shape: (batch, 16, 100)
-        e2 = self.enc2(e1) # Shape: (batch, 32, 50)
-        
-        d2 = self.dec2(e2) # Shape: (batch, 16, 100)
-        cat1 = torch.cat((d2, e1), dim=1) # Skip connection from e1
-        
-        out = self.dec1(cat1) # Shape: (batch, 1, 200)
-        return out
+        e1 = self.enc1(x)
+        e2 = self.enc2(e1)
+        d2 = self.dec2(e2)
+        cat1 = torch.cat((d2, e1), dim=1)
+        return self.dec1(cat1)
 
-# --- 2. DATA LOADERS & FILTERING ---
+# --- 2. TRIAGE & FILTERS ---
 def clinical_triage_engine(reconstructed, peaks, fs=50.0):
     if len(peaks) < 2:
         return {
@@ -70,98 +49,48 @@ def clinical_triage_engine(reconstructed, peaks, fs=50.0):
     peak_amps = reconstructed[peaks]
     amp_cv = (np.std(peak_amps) / (np.mean(peak_amps) + 1e-8)) * 100.0
     
-    # 3. Actionable Clinical Matrix
     advice_notes = []
-    
-    # --- Category A: Rate Anomalies (Bradycardia / Tachycardia) ---
     if bpm < 50:
-        status = "ALERT — SEVERE BRADYCARDIA"
-        color = "warning"
-        category = "Bradycardia"
-        advice_notes.append(f" **Low Heart Rate ({bpm} BPM):** Heart rate falls below normal resting threshold (60 BPM).")
-        advice_notes.append(" **Clinical Action:** Assess patient for symptoms of dizziness, fatigue, or syncope. Check current medication log for beta-blockers or calcium channel blockers.")
-        advice_notes.append(" **Patient Guidance:** Avoid sudden standing to prevent orthostatic lightheadedness. Seek immediate care if chest tightness occurs.")
-        
+        status, color, category = "ALERT — SEVERE BRADYCARDIA", "warning", "Bradycardia"
+        advice_notes.append(f" **Low Heart Rate ({bpm} BPM):** Pulse rate below normal resting threshold.")
     elif bpm > 110:
-        status = "ALERT — TACHYCARDIA DETECTED"
-        color = "warning"
-        category = "Tachycardia"
-        advice_notes.append(f" **Elevated Heart Rate ({bpm} BPM):** Resting pulse exceeds normal physiological limits.")
-        advice_notes.append(" **Clinical Action:** Screen for underlying drivers including fever, dehydration, acute stress, pain, or excessive stimulant intake.")
-        advice_notes.append(" **Patient Guidance:** Sit comfortably, hydrate with fluids, and perform guided deep-breathing exercises. Re-measure in 15 minutes.")
-
-    # --- Category B: Rhythm Anomalies (Arrhythmia / HRV Fluctuations) ---
+        status, color, category = "ALERT — TACHYCARDIA DETECTED", "warning", "Tachycardia"
+        advice_notes.append(f" **Elevated Heart Rate ({bpm} BPM):** Pulse rate exceeds physiological target.")
     elif sdnn > 120.0:
-        status = "ALERT — HIGH RHYTHM VARIABILITY"
-        color = "warning"
-        category = "Arrhythmia Risk"
-        advice_notes.append(f" **Irregular Pulse Cadence (SDNN: {sdnn:.1f} ms):** High beat-to-beat timing variance detected.")
-        advice_notes.append(" **Clinical Action:** Schedule a full 12-lead ECG trace to evaluate for Atrial Fibrillation (AFib), Premature Ventricular Contractions (PVCs), or sinus arrhythmia.")
-        advice_notes.append(" **Patient Guidance:** Limit caffeine and nicotine intake. Note any sensations of heart fluttering or skipped beats in a symptom journal.")
-
-    elif sdnn < 15.0 and len(peaks) >= 4:
-        status = "ALERT — LOW HRV (AUTONOMIC STRESS)"
-        color = "warning"
-        category = "Autonomic Depression"
-        advice_notes.append(f" **Suppressed HRV (SDNN: {sdnn:.1f} ms):** Abnormally rigid beat-to-beat timing.")
-        advice_notes.append(" **Clinical Action:** Indicates high sympathetic overdrive or fatigue. Evaluate autonomic nervous system stress, metabolic health, or sleep apnea risk.")
-        advice_notes.append(" **Patient Guidance:** Focus on recovery, prioritize sleep hygiene, and avoid intense physical exertion until baseline HRV recovers.")
-
-    # --- Category C: Normal Rhythm ---
+        status, color, category = "ALERT — HIGH RHYTHM VARIABILITY", "warning", "Arrhythmia Risk"
+        advice_notes.append(f" **Irregular Pulse Cadence (SDNN: {sdnn:.1f} ms):** Beat-to-beat timing variance.")
     else:
-        status = "NOMINAL — STABLE SINUS RHYTHM"
-        color = "success"
-        category = "Normal"
-        advice_notes.append(f" **Normal Physiological Parameters:** Heart rate ({bpm} BPM) and pulse cadence (SDNN: {sdnn:.1f} ms) are within target ranges.")
-        advice_notes.append(" **Clinical Action:** Telemetry signal is clean. Continue standard passive continuous monitoring protocol.")
-        advice_notes.append(" **Patient Guidance:** No immediate health interventions required. Maintain regular daily routines.")
+        status, color, category = "NOMINAL — STABLE SINUS RHYTHM", "success", "Normal"
+        advice_notes.append(f" **Normal Parameters:** Heart rate ({bpm} BPM) and pulse cadence (SDNN: {sdnn:.1f} ms) stable.")
 
-    # --- Category D: Signal Perfusion Warning ---
-    if amp_cv > 15.0:
-        advice_notes.append(f" **Peripheral Perfusion Instability (Amp CV: {amp_cv:.1f}%):** Significant pulse wave height variation.")
-        advice_notes.append(" **Clinical Action:** May indicate peripheral vasoconstriction, cold extremities, or mild sensor displacement.")
-
-    return {
-        "status": status,
-        "color": color,
-        "bpm": bpm,
-        "sdnn": sdnn,
-        "category": category,
-        "advice": advice_notes
-    }
+    return {"status": status, "color": color, "bpm": bpm, "sdnn": sdnn, "category": category, "advice": advice_notes}
 
 def butter_bandpass_filter(data, lowcut=0.5, highcut=4.0, fs=50.0, order=2):
-    """Bandpass filter to eliminate baseline wander and high-frequency noise."""
     nyq = 0.5 * fs
-    low = lowcut / nyq
-    high = highcut / nyq
+    low, high = lowcut / nyq, highcut / nyq
     b, a = signal.butter(order, [low, high], btype='band')
     return signal.filtfilt(b, a, data)
 
 @st.cache_data
 def load_default_signal(length=200):
-    """Generates a benchmark PPG wave."""
-    t = np.linspace(0, 4 * np.pi, length)
+    # Updated: 10*pi produces ~5 heartbeats over 200 samples at 50Hz (= 75 BPM)
+    t = np.linspace(0, 10 * np.pi, length)
     clean_wave = np.sin(t) + 0.5 * np.sin(2 * t) + 0.2 * np.sin(3 * t)
     return (clean_wave - np.min(clean_wave)) / (np.max(clean_wave) - np.min(clean_wave) + 1e-8)
 
 @st.cache_resource
 def train_model():
-    """Trains the 1D U-Net PyTorch model once and caches it."""
     np.random.seed(42)
     torch.manual_seed(42)
-    
     length = 200
-    t = np.linspace(0, 4 * np.pi, length)
+    t = np.linspace(0, 10 * np.pi, length)
     clean_dataset, noisy_dataset = [], []
     
     for _ in range(500):
         clean_wave = np.sin(t) + 0.5 * np.sin(2 * t) + 0.2 * np.sin(3 * t)
         clean_wave = (clean_wave - np.min(clean_wave)) / (np.max(clean_wave) - np.min(clean_wave) + 1e-8)
-        
         noisy_wave = clean_wave + 0.3 * np.sin(50 * t) + 0.2 * np.sin(0.2 * t) + np.random.normal(0, 0.15, length)
         noisy_wave = (noisy_wave - np.min(noisy_wave)) / (np.max(noisy_wave) - np.min(noisy_wave) + 1e-8)
-        
         clean_dataset.append(clean_wave)
         noisy_dataset.append(noisy_wave)
         
@@ -181,12 +110,11 @@ def train_model():
             loss = criterion(outputs, clean_tensor[indices])
             loss.backward()
             optimizer.step()
-            
     return model
 
 model = train_model()
 
-# --- 3. SIDEBAR CONTROLS & FILE UPLOADER ---
+# --- 3. SIDEBAR CONFIGURATION ---
 st.sidebar.header("Data & Noise Settings")
 
 data_source = st.sidebar.radio("Data Mode", ["Synthetic Generator", "Upload Real PPG Stream"])
@@ -202,11 +130,9 @@ noise_amp = st.sidebar.slider("Noise Amplitude", 0.0, 0.8, 0.3, 0.05)
 hum_freq = st.sidebar.slider("Grid Hum Frequency (Hz)", 10, 100, 50, 10)
 drift_level = st.sidebar.slider("Baseline Drift", 0.0, 0.5, 0.2, 0.05)
 
-# --- 4. DATA PROCESSING PIPELINE ---
-FS = 50.0  # Sampling frequency in Hz
-length = 200
-t = np.linspace(0, 10 * np.pi, length)
-
+# --- 4. PROCESSING PIPELINE ---
+TARGET_LENGTH = 200
+t = np.linspace(0, 10 * np.pi, TARGET_LENGTH)
 is_custom_file = False
 
 if data_source == "Upload Real PPG Stream" and uploaded_file is not None:
@@ -216,56 +142,47 @@ if data_source == "Upload Real PPG Stream" and uploaded_file is not None:
             raw_data = raw_data[:, 0]
         
         # Resample any uploaded length to exactly 200 points for the 1D U-Net model
-        if len(raw_data) != length:
-            raw_data = signal.resample(raw_data, length)
+        if len(raw_data) != TARGET_LENGTH:
+            raw_data = signal.resample(raw_data, TARGET_LENGTH)
             
         true_clean = (raw_data - np.min(raw_data)) / (np.max(raw_data) - np.min(raw_data) + 1e-8)
         is_custom_file = True
         st.sidebar.success("Custom PPG Stream Processed!")
     except Exception as e:
         st.sidebar.error(f"Error parsing file: {e}. Reverting to Synthetic.")
-        true_clean = load_default_signal(length)
+        true_clean = load_default_signal(TARGET_LENGTH)
 else:
-    true_clean = load_default_signal(length)
+    true_clean = load_default_signal(TARGET_LENGTH)
 
-
-
-# Add synthetic noise
+# Apply noise (optional testing overlay on both synthetic or real signals)
 high_freq_noise = noise_amp * np.sin(hum_freq * t)
 baseline_drift = drift_level * np.sin(0.2 * t)
-random_noise = np.random.normal(0, noise_amp * 0.5, length)
+random_noise = np.random.normal(0, noise_amp * 0.5, TARGET_LENGTH)
 
 raw_noisy = true_clean + high_freq_noise + baseline_drift + random_noise
 raw_noisy = (raw_noisy - np.min(raw_noisy)) / (np.max(raw_noisy) - np.min(raw_noisy) + 1e-8)
 
-# Stage 2: Bandpass Filter
+# Bandpass filtering
 filtered_signal = butter_bandpass_filter(raw_noisy, lowcut=0.5, highcut=4.0, fs=FS)
 filtered_signal = (filtered_signal - np.min(filtered_signal)) / (np.max(filtered_signal) - np.min(filtered_signal) + 1e-8)
-    
-# Signal Metrics
-signal_power = np.mean(true_clean ** 2)
-noise_power = np.mean((raw_noisy - true_clean) ** 2)
-snr_db = 10 * np.log10(signal_power / noise_power) if noise_power > 0 else 100.0
 
-# AI U-Net Inference
+# Inference
 model.eval()
 with torch.no_grad():
     input_sample = torch.FloatTensor(raw_noisy).unsqueeze(0).unsqueeze(0)
     reconstructed = model(input_sample).squeeze().numpy()
 
-# Reconstruction Correlation Score
-correlation_matrix = np.corrcoef(reconstructed, true_clean)
-raw_corr = correlation_matrix[0, 1]
-confidence_score = 0.0 if np.isnan(raw_corr) else float(raw_corr) * 100.0
-
-# Peak Detection
+# Peak Detection scaled according to target sampling frequency
 min_distance = max(1, int(FS * 0.35)) # ~170 BPM upper bound threshold
 peaks, _ = signal.find_peaks(reconstructed, distance=min_distance, prominence=0.15)
 
-# Output Signal Quality Metrics
-denoised_noise_power = np.mean((reconstructed - true_clean) ** 2)
-output_snr_db = 10 * np.log10(signal_power / denoised_noise_power) if denoised_noise_power > 0 else 100.0
-snr_improvement = output_snr_db - snr_db
+# Metrics calculation
+signal_power = np.mean(true_clean ** 2)
+noise_power = np.mean((raw_noisy - true_clean) ** 2)
+snr_db = 10 * np.log10(signal_power / noise_power) if noise_power > 0 else 100.0
+
+correlation_matrix = np.corrcoef(reconstructed, true_clean)
+confidence_score = 0.0 if np.isnan(correlation_matrix[0, 1]) else float(correlation_matrix[0, 1]) * 100.0
 
 # --- 5. DASHBOARD DISPLAY ---
 tabs = st.tabs(["Single Signal Analysis", "Batch Performance Suite"])

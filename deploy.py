@@ -180,7 +180,7 @@ TARGET_LENGTH = 200
 duration = 4.0
 t = np.linspace(0, duration, TARGET_LENGTH)
 is_custom_file = False
-true_clean = None  # Ground truth is None for uploaded streams
+true_clean = None  # None for uploaded streams (no ground truth benchmark)
 
 if data_source == "Upload Real PPG Stream" and uploaded_file is not None:
     try:
@@ -198,7 +198,7 @@ if data_source == "Upload Real PPG Stream" and uploaded_file is not None:
         if len(raw_data) != TARGET_LENGTH:
             raw_data = signal.resample(raw_data, TARGET_LENGTH)
             
-        # Process real uploaded stream directly (no synthetic noise added)
+        # Real signal is processed directly as raw input (NO synthetic noise added)
         raw_noisy = (raw_data - np.min(raw_data)) / (np.max(raw_data) - np.min(raw_data) + 1e-8)
         is_custom_file = True
         st.sidebar.success(f"Custom Stream Loaded! ({len(full_signal):,} points)")
@@ -207,11 +207,12 @@ if data_source == "Upload Real PPG Stream" and uploaded_file is not None:
         true_clean = generate_synthetic_ppg(t, target_hr)
         raw_noisy = true_clean
 else:
-    # Synthetic Mode generates baseline + synthetic noise sliders
+    # Synthetic Mode generates ground truth AND applies synthetic noise sliders
     true_clean = generate_synthetic_ppg(t, target_hr)
     high_freq_noise = noise_amp * np.sin(2 * np.pi * hum_freq * t)
     baseline_drift = drift_level * np.sin(2 * np.pi * 0.2 * t)
     random_noise = np.random.normal(0, noise_amp * 0.5, TARGET_LENGTH)
+    
     raw_noisy = true_clean + high_freq_noise + baseline_drift + random_noise
     raw_noisy = (raw_noisy - np.min(raw_noisy)) / (np.max(raw_noisy) - np.min(raw_noisy) + 1e-8)
 

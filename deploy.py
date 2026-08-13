@@ -148,30 +148,39 @@ def train_model():
 
 model = train_model()
 
-# --- 3. RESTORED SIDEBAR CONFIGURATION & FILE UPLOADER ---
-st.sidebar.header("Data & Noise Settings")
+# --- 3. SIDEBAR CONFIGURATION ---
+st.sidebar.header("Data & Settings")
 
 data_source = st.sidebar.radio("Data Mode", ["Synthetic Generator", "Upload Real PPG Stream"])
 
 if data_source == "Upload Real PPG Stream":
-    uploaded_file = st.sidebar.file_uploader("Upload CSV/TXT Signal", type=["csv", "txt"])
+    uploaded_file = st.sidebar.file_uploader("Upload CSV Stream", type=["csv", "txt"])
     FS = st.sidebar.number_input("Sensor Sampling Rate (Hz)", min_value=1.0, max_value=1000.0, value=500.0, step=10.0)
-    target_hr = 500 # Default fallback
+    target_hr = 75  # Default fallback
+    
+    # Hide synthetic noise controls since real data has its own natural noise
+    noise_amp = 0.0
+    hum_freq = 50
+    drift_level = 0.0
+
 else:
     uploaded_file = None
     FS = 50.0
     target_hr = st.sidebar.slider("Simulated Heart Rate (BPM)", 50, 140, 75)
+    
+    # Only display synthetic noise controls in Synthetic Mode
+    st.sidebar.subheader("Synthetic Noise Controls")
+    noise_amp = st.sidebar.slider("Noise Amplitude", 0.0, 0.8, 0.3, 0.05)
+    hum_freq = st.sidebar.slider("Grid Hum Frequency (Hz)", 10, 100, 50, 10)
+    drift_level = st.sidebar.slider("Baseline Drift", 0.0, 0.5, 0.2, 0.05)
 
-noise_amp = st.sidebar.slider("Noise Amplitude", 0.0, 0.8, 0.3, 0.05)
-hum_freq = st.sidebar.slider("Grid Hum Frequency (Hz)", 10, 100, 50, 10)
-drift_level = st.sidebar.slider("Baseline Drift", 0.0, 0.5, 0.2, 0.05)
 
 # --- 4. DATA PROCESSING PIPELINE ---
 TARGET_LENGTH = 200
 duration = 4.0
 t = np.linspace(0, duration, TARGET_LENGTH)
 is_custom_file = False
-true_clean = None  # None for uploaded streams (no ground truth)
+true_clean = None  # Ground truth is None for uploaded streams
 
 if data_source == "Upload Real PPG Stream" and uploaded_file is not None:
     try:
@@ -189,21 +198,16 @@ if data_source == "Upload Real PPG Stream" and uploaded_file is not None:
         if len(raw_data) != TARGET_LENGTH:
             raw_data = signal.resample(raw_data, TARGET_LENGTH)
             
-        # Real signal is processed directly as raw input (NO synthetic noise added)
+        # Process real uploaded stream directly (no synthetic noise added)
         raw_noisy = (raw_data - np.min(raw_data)) / (np.max(raw_data) - np.min(raw_data) + 1e-8)
         is_custom_file = True
-        st.sidebar.success(f"Custom Stream Loaded! ({len(full_signal):,} total points)")
+        st.sidebar.success(f"Custom Stream Loaded! ({len(full_signal):,} points)")
     except Exception as e:
         st.sidebar.error(f"Error parsing file: {e}. Reverting to Synthetic.")
-        # Fallback to synthetic if parsing fails
         true_clean = generate_synthetic_ppg(t, target_hr)
-        high_freq_noise = noise_amp * np.sin(2 * np.pi * hum_freq * t)
-        baseline_drift = drift_level * np.sin(2 * np.pi * 0.2 * t)
-        random_noise = np.random.normal(0, noise_amp * 0.5, TARGET_LENGTH)
-        raw_noisy = true_clean + high_freq_noise + baseline_drift + random_noise
-        raw_noisy = (raw_noisy - np.min(raw_noisy)) / (np.max(raw_noisy) - np.min(raw_noisy) + 1e-8)
+        raw_noisy = true_clean
 else:
-    # Synthetic mode generates ground truth AND adds noise sliders
+    # Synthetic Mode generates baseline + synthetic noise sliders
     true_clean = generate_synthetic_ppg(t, target_hr)
     high_freq_noise = noise_amp * np.sin(2 * np.pi * hum_freq * t)
     baseline_drift = drift_level * np.sin(2 * np.pi * 0.2 * t)

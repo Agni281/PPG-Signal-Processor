@@ -45,6 +45,62 @@ class SignalDenoisingUNet1D(nn.Module):
         out = self.dec1(cat1) # Shape: (batch, 1, 200)
         return out
 
+def clinical_triage_engine(reconstructed, peaks, fs=50.0):
+    """
+    Evaluates clinical biomarkers, signal quality, and rhythm metrics 
+    to provide non-diagnostic clinical advice and risk stratification.
+    """
+    if len(peaks) < 2:
+        return {
+            "status": "CRITICAL / UNRELIABLE",
+            "color": "error",
+            "sqi_score": 0.0,
+            "hrv_sdnn": 0.0,
+            "advice": [
+                "🚨 **Insufficient Peak Detection:** Signal attenuation or extreme artifact detected.",
+                "👉 **Action:** Check sensor contact, reposition photodiode, and verify optical alignment."
+            ]
+        }
+    
+    # 1. Heart Rate Variability (HRV) - SDNN (Standard Deviation of NN intervals in ms)
+    rr_intervals_ms = (np.diff(peaks) / fs) * 1000.0
+    sdnn = np.std(rr_intervals_ms)
+    
+    # 2. Perfusion / Morphological Quality (Perfusion Index Proxy)
+    peak_amps = reconstructed[peaks]
+    amplitude_variance = np.var(peak_amps)
+    
+    # 3. Clinical Advice Matrix
+    advice_notes = []
+    
+    # Assess Signal Quality & Artifacts
+    if amplitude_variance > 0.02:
+        advice_notes.append("⚠️ **Peripheral Perfusion Instability:** High beat-to-beat amplitude variation detected. May indicate peripheral vasoconstriction or motion interference.")
+    
+    # Assess Rhythm & HRV
+    if sdnn > 100.0:
+        status = "ALERT — HIGH HRV / POSSIBLE ARRHYTHMIA"
+        color = "warning"
+        advice_notes.append("⚡ **Elevated RR Interval Variance (SDNN > 100ms):** Significant beat-to-beat inconsistency observed.")
+        advice_notes.append("👉 **Clinical Recommendation:** Perform 12-lead ECG trace to rule out Atrial Fibrillation or Frequent PVCs.")
+    elif sdnn < 10.0 and len(peaks) > 3:
+        status = "ALERT — MONOTONOUS RHYTHM (LOW HRV)"
+        color = "warning"
+        advice_notes.append("📉 **Depressed Heart Rate Variability (SDNN < 10ms):** Reduced autonomic regulation observed.")
+        advice_notes.append("👉 **Clinical Recommendation:** Evaluate patient for sympathetic overactivity, severe physical stress, or autonomic neuropathy.")
+    else:
+        status = "NOMINAL — STABLE SINUS PATTERN"
+        color = "success"
+        advice_notes.append("✅ **Normal Pulse Interval Dynamics:** Beat-to-beat variability falls within standard physiological boundaries.")
+        advice_notes.append("👉 **Clinical Recommendation:** Continue passive remote monitoring. No immediate sensor repositioning required.")
+        
+    return {
+        "status": status,
+        "color": color,
+        "sdnn": sdnn,
+        "advice": advice_notes
+    }
+
 def butter_bandpass_filter(data, lowcut=0.5, highcut=4.0, fs=50.0, order=2):
     nyq = 0.5 * fs
     low = lowcut / nyq

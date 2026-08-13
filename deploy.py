@@ -63,9 +63,9 @@ def clinical_triage_engine(reconstructed, peaks, fs=50.0):
             "sdnn": 0.0,
             "category": "Artifact",
             "advice": [
-                "🚨 **Insufficient Peak Resolution:** Waveform amplitude is suppressed or distorted by extreme noise.",
-                "🔧 **Troubleshooting:** Check sensor contact, ensure the LED diode is flush against the skin, and ask the patient to minimize limb movement.",
-                "📋 **Next Step:** Re-run baseline measurement after 30 seconds of rest."
+                " **Insufficient Peak Resolution:** Waveform amplitude is suppressed or distorted by extreme noise.",
+                " **Troubleshooting:** Check sensor contact, ensure the LED diode is flush against the skin, and ask the patient to minimize limb movement.",
+                " **Next Step:** Re-run baseline measurement after 30 seconds of rest."
             ]
         }
     
@@ -92,48 +92,48 @@ def clinical_triage_engine(reconstructed, peaks, fs=50.0):
         status = "ALERT — SEVERE BRADYCARDIA"
         color = "warning"
         category = "Bradycardia"
-        advice_notes.append(f"📉 **Low Heart Rate ({bpm} BPM):** Heart rate falls below normal resting threshold (60 BPM).")
-        advice_notes.append("🩺 **Clinical Action:** Assess patient for symptoms of dizziness, fatigue, or syncope. Check current medication log for beta-blockers or calcium channel blockers.")
-        advice_notes.append("👤 **Patient Guidance:** Avoid sudden standing to prevent orthostatic lightheadedness. Seek immediate care if chest tightness occurs.")
+        advice_notes.append(f" **Low Heart Rate ({bpm} BPM):** Heart rate falls below normal resting threshold (60 BPM).")
+        advice_notes.append(" **Clinical Action:** Assess patient for symptoms of dizziness, fatigue, or syncope. Check current medication log for beta-blockers or calcium channel blockers.")
+        advice_notes.append(" **Patient Guidance:** Avoid sudden standing to prevent orthostatic lightheadedness. Seek immediate care if chest tightness occurs.")
         
     elif bpm > 110:
         status = "ALERT — TACHYCARDIA DETECTED"
         color = "warning"
         category = "Tachycardia"
-        advice_notes.append(f"📈 **Elevated Heart Rate ({bpm} BPM):** Resting pulse exceeds normal physiological limits.")
-        advice_notes.append("🩺 **Clinical Action:** Screen for underlying drivers including fever, dehydration, acute stress, pain, or excessive stimulant intake.")
-        advice_notes.append("👤 **Patient Guidance:** Sit comfortably, hydrate with fluids, and perform guided deep-breathing exercises. Re-measure in 15 minutes.")
+        advice_notes.append(f" **Elevated Heart Rate ({bpm} BPM):** Resting pulse exceeds normal physiological limits.")
+        advice_notes.append(" **Clinical Action:** Screen for underlying drivers including fever, dehydration, acute stress, pain, or excessive stimulant intake.")
+        advice_notes.append(" **Patient Guidance:** Sit comfortably, hydrate with fluids, and perform guided deep-breathing exercises. Re-measure in 15 minutes.")
 
     # --- Category B: Rhythm Anomalies (Arrhythmia / HRV Fluctuations) ---
     elif sdnn > 120.0:
         status = "ALERT — HIGH RHYTHM VARIABILITY"
         color = "warning"
         category = "Arrhythmia Risk"
-        advice_notes.append(f"⚡ **Irregular Pulse Cadence (SDNN: {sdnn:.1f} ms):** High beat-to-beat timing variance detected.")
-        advice_notes.append("🩺 **Clinical Action:** Schedule a full 12-lead ECG trace to evaluate for Atrial Fibrillation (AFib), Premature Ventricular Contractions (PVCs), or sinus arrhythmia.")
-        advice_notes.append("👤 **Patient Guidance:** Limit caffeine and nicotine intake. Note any sensations of heart fluttering or skipped beats in a symptom journal.")
+        advice_notes.append(f" **Irregular Pulse Cadence (SDNN: {sdnn:.1f} ms):** High beat-to-beat timing variance detected.")
+        advice_notes.append(" **Clinical Action:** Schedule a full 12-lead ECG trace to evaluate for Atrial Fibrillation (AFib), Premature Ventricular Contractions (PVCs), or sinus arrhythmia.")
+        advice_notes.append(" **Patient Guidance:** Limit caffeine and nicotine intake. Note any sensations of heart fluttering or skipped beats in a symptom journal.")
 
     elif sdnn < 15.0 and len(peaks) >= 4:
         status = "ALERT — LOW HRV (AUTONOMIC STRESS)"
         color = "warning"
         category = "Autonomic Depression"
-        advice_notes.append(f"📉 **Suppressed HRV (SDNN: {sdnn:.1f} ms):** Abnormally rigid beat-to-beat timing.")
-        advice_notes.append("🩺 **Clinical Action:** Indicates high sympathetic overdrive or fatigue. Evaluate autonomic nervous system stress, metabolic health, or sleep apnea risk.")
-        advice_notes.append("👤 **Patient Guidance:** Focus on recovery, prioritize sleep hygiene, and avoid intense physical exertion until baseline HRV recovers.")
+        advice_notes.append(f" **Suppressed HRV (SDNN: {sdnn:.1f} ms):** Abnormally rigid beat-to-beat timing.")
+        advice_notes.append(" **Clinical Action:** Indicates high sympathetic overdrive or fatigue. Evaluate autonomic nervous system stress, metabolic health, or sleep apnea risk.")
+        advice_notes.append(" **Patient Guidance:** Focus on recovery, prioritize sleep hygiene, and avoid intense physical exertion until baseline HRV recovers.")
 
     # --- Category C: Normal Rhythm ---
     else:
         status = "NOMINAL — STABLE SINUS RHYTHM"
         color = "success"
         category = "Normal"
-        advice_notes.append(f"✅ **Normal Physiological Parameters:** Heart rate ({bpm} BPM) and pulse cadence (SDNN: {sdnn:.1f} ms) are within target ranges.")
-        advice_notes.append("🩺 **Clinical Action:** Telemetry signal is clean. Continue standard passive continuous monitoring protocol.")
-        advice_notes.append("👤 **Patient Guidance:** No immediate health interventions required. Maintain regular daily routines.")
+        advice_notes.append(f" **Normal Physiological Parameters:** Heart rate ({bpm} BPM) and pulse cadence (SDNN: {sdnn:.1f} ms) are within target ranges.")
+        advice_notes.append(" **Clinical Action:** Telemetry signal is clean. Continue standard passive continuous monitoring protocol.")
+        advice_notes.append(" **Patient Guidance:** No immediate health interventions required. Maintain regular daily routines.")
 
     # --- Category D: Signal Perfusion Warning ---
     if amp_cv > 15.0:
-        advice_notes.append(f"⚠️ **Peripheral Perfusion Instability (Amp CV: {amp_cv:.1f}%):** Significant pulse wave height variation.")
-        advice_notes.append("🩺 **Clinical Action:** May indicate peripheral vasoconstriction, cold extremities, or mild sensor displacement.")
+        advice_notes.append(f" **Peripheral Perfusion Instability (Amp CV: {amp_cv:.1f}%):** Significant pulse wave height variation.")
+        advice_notes.append(" **Clinical Action:** May indicate peripheral vasoconstriction, cold extremities, or mild sensor displacement.")
 
     return {
         "status": status,

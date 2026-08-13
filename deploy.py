@@ -11,34 +11,47 @@ st.set_page_config(page_title="Remote PPG Signal De-Noiser", layout="wide")
 st.title("Remote Biosensor Signal De-Noiser")
 st.markdown("**An Edge-AI & Signal Processing Pipeline for Rural Healthcare**")
 
-# --- 1. MODEL DEFINITION ---
+# --- 1. FIXED MODEL DEFINITION (FIXED CHANNEL PROGRESSION) ---
 class SignalDenoisingUNet1D(nn.Module):
     def __init__(self):
         super(SignalDenoisingUNet1D, self).__init__()
-        self.enc1 = nn.Sequential(nn.Conv1d(1, 16, kernel_size=5, stride=2, padding=2), nn.ReLU())
-        self.enc2 = nn.Sequential(nn.Conv1d(1, 16, kernel_size=5, stride=2, padding=2), nn.ReLU()) # preserved dimensions
-        self.dec2 = nn.Sequential(nn.ConvTranspose1d(16, 16, kernel_size=5, stride=2, padding=2, output_padding=1), nn.ReLU())
-        self.dec1 = nn.Sequential(nn.ConvTranspose1d(32, 1, kernel_size=5, stride=2, padding=2, output_padding=1), nn.Sigmoid())
+        # Input: (batch, 1, length) -> Output: (batch, 16, length/2)
+        self.enc1 = nn.Sequential(
+            nn.Conv1d(1, 16, kernel_size=5, stride=2, padding=2),
+            nn.ReLU()
+        )
+        # Input: (batch, 16, length/2) -> Output: (batch, 32, length/4)
+        self.enc2 = nn.Sequential(
+            nn.Conv1d(16, 32, kernel_size=5, stride=2, padding=2),
+            nn.ReLU()
+        )
+        # Input: (batch, 32, length/4) -> Output: (batch, 16, length/2)
+        self.dec2 = nn.Sequential(
+            nn.ConvTranspose1d(32, 16, kernel_size=5, stride=2, padding=2, output_padding=1),
+            nn.ReLU()
+        )
+        # Input: (batch, 16+16=32, length/2) -> Output: (batch, 1, length)
+        self.dec1 = nn.Sequential(
+            nn.ConvTranspose1d(32, 1, kernel_size=5, stride=2, padding=2, output_padding=1),
+            nn.Sigmoid()
+        )
 
     def forward(self, x):
-        e1 = self.enc1(x)
-        e2 = self.enc2(e1)
-        d2 = self.dec2(e2)
-        cat1 = torch.cat([d2, e1], dim=1)
-        d1 = self.dec1(cat1)
+        e1 = self.enc1(x)       # (B, 16, L/2)
+        e2 = self.enc2(e1)      # (B, 32, L/4)
+        d2 = self.dec2(e2)      # (B, 16, L/2)
+        cat1 = torch.cat([d2, e1], dim=1) # (B, 32, L/2)
+        d1 = self.dec1(cat1)    # (B, 1, L)
         return d1
 
-# --- FIX 1: DYNAMIC PPG SIGNAL GENERATOR (VARIOUS HR & DUAL PEAKS) ---
+# --- DYNAMIC PPG SIGNAL GENERATOR ---
 def generate_synthetic_ppg(t, hr_bpm):
-    """Generates a realistic PPG waveform with systolic and diastolic peaks."""
     freq = hr_bpm / 60.0
-    # Primary pulse + secondary dichrotic notch wave
     ppg = np.sin(2 * np.pi * freq * t) + 0.35 * np.sin(4 * np.pi * freq * t + 0.5)
     return (ppg - np.min(ppg)) / (np.max(ppg) - np.min(ppg) + 1e-8)
 
-# --- FIX 3: STANDALONE SIGNAL QUALITY INDEX (SQI) ---
+# --- STANDALONE SIGNAL QUALITY INDEX (SQI) ---
 def calculate_sqi(sig, fs=100.0):
-    """Calculates Signal Quality Index using spectral energy in cardiac band (0.5 - 4 Hz)."""
     freqs, psd = signal.welch(sig, fs=fs, nperseg=len(sig))
     cardiac_band_power = np.sum(psd[(freqs >= 0.5) & (freqs <= 4.0)])
     total_power = np.sum(psd) + 1e-8
@@ -76,10 +89,9 @@ model = SignalDenoisingUNet1D()
 criterion = nn.MSELoss()
 optimizer = optim.Adam(model.parameters(), lr=0.01)
 
-# Training loop using randomized PPG parameters
+# Training loop
 for epoch in range(40):
     optimizer.zero_grad()
-    # Randomize sample HR and shifts during training loop
     rand_hr = np.random.randint(50, 130)
     sample_clean = generate_synthetic_ppg(t, rand_hr)
     sample_noise = noise_amp * np.sin(2 * np.pi * hum_freq * t) + drift_level * np.sin(2 * np.pi * 0.2 * t)
@@ -100,27 +112,27 @@ with torch.no_grad():
     inp_tensor = torch.FloatTensor(raw_noisy).unsqueeze(0).unsqueeze(0)
     reconstructed = model(inp_tensor).squeeze().numpy()
 
-# --- FIX 3: STANDALONE CONFIDENCE SCORE ---
+# Quality Metrics
 confidence_score = calculate_sqi(reconstructed, fs=FS)
 
-# --- FIX 4: REAL CLINICAL METRICS (BPM & HRV / RMSSD) ---
+# Heart Rate & HRV Calculation
 min_distance = max(1, int(FS * 0.4))
 peaks, _ = signal.find_peaks(reconstructed, distance=min_distance, prominence=0.1)
 
 if len(peaks) >= 2:
     peak_times = t[peaks]
-    rr_intervals = np.diff(peak_times)  # Interval in seconds
+    rr_intervals = np.diff(peak_times)
     bpm = 60.0 / np.mean(rr_intervals)
     rmssd = np.sqrt(np.mean(np.square(np.diff(rr_intervals)))) * 1000.0 if len(rr_intervals) > 1 else 0.0
 
     if 60 <= bpm <= 100:
-        triage_msg = f" HEALTHY: Normal Sinus Rhythm ({bpm:.1f} BPM | RMSSD: {rmssd:.1f} ms)"
+        triage_msg = f"✅ HEALTHY: Normal Sinus Rhythm ({bpm:.1f} BPM | RMSSD: {rmssd:.1f} ms)"
     else:
-        triage_msg = f" WARNING: Abnormal Pulse Frequency Detected ({bpm:.1f} BPM)!"
+        triage_msg = f"🚨 WARNING: Abnormal Pulse Frequency Detected ({bpm:.1f} BPM)!"
 else:
     bpm = 0.0
     rmssd = 0.0
-    triage_msg = " WARNING: Insufficient Peaks Detected for Reliable Calculation."
+    triage_msg = "⚠️ WARNING: Insufficient Peaks Detected for Reliable Calculation."
 
 # --- DASHBOARD DISPLAY ---
 col1, col2, col3 = st.columns(3)

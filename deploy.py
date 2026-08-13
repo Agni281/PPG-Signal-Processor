@@ -205,29 +205,30 @@ drift_level = st.sidebar.slider("Baseline Drift", 0.0, 0.5, 0.2, 0.05)
 # --- 4. DATA PROCESSING PIPELINE ---
 FS = 50.0  # Sampling frequency in Hz
 length = 200
-t = np.linspace(0, 4 * np.pi, length)
+t = np.linspace(0, 10 * np.pi, length)
 
 is_custom_file = False
 
-if uploaded_file is not None:
+if data_source == "Upload Real PPG Stream" and uploaded_file is not None:
     try:
         raw_data = np.loadtxt(uploaded_file, delimiter=',')
         if raw_data.ndim > 1:
             raw_data = raw_data[:, 0]
+        
+        # Resample any uploaded length to exactly 200 points for the 1D U-Net model
+        if len(raw_data) != length:
+            raw_data = signal.resample(raw_data, length)
             
-        if len(raw_data) >= length:
-            true_clean = raw_data[:length]
-        else:
-            true_clean = np.pad(raw_data, (0, length - len(raw_data)), mode='edge')
-            
-        true_clean = (true_clean - np.min(true_clean)) / (np.max(true_clean) - np.min(true_clean) + 1e-8)
+        true_clean = (raw_data - np.min(raw_data)) / (np.max(raw_data) - np.min(raw_data) + 1e-8)
         is_custom_file = True
-        st.sidebar.success("Custom Signal Loaded!")
+        st.sidebar.success("Custom PPG Stream Processed!")
     except Exception as e:
-        st.sidebar.error(f"Error loading file: {e}. Defaulting to PPG reference signal.")
+        st.sidebar.error(f"Error parsing file: {e}. Reverting to Synthetic.")
         true_clean = load_default_signal(length)
 else:
     true_clean = load_default_signal(length)
+
+
 
 # Add synthetic noise
 high_freq_noise = noise_amp * np.sin(hum_freq * t)
@@ -240,7 +241,7 @@ raw_noisy = (raw_noisy - np.min(raw_noisy)) / (np.max(raw_noisy) - np.min(raw_no
 # Stage 2: Bandpass Filter
 filtered_signal = butter_bandpass_filter(raw_noisy, lowcut=0.5, highcut=4.0, fs=FS)
 filtered_signal = (filtered_signal - np.min(filtered_signal)) / (np.max(filtered_signal) - np.min(filtered_signal) + 1e-8)
-
+    
 # Signal Metrics
 signal_power = np.mean(true_clean ** 2)
 noise_power = np.mean((raw_noisy - true_clean) ** 2)
@@ -258,7 +259,8 @@ raw_corr = correlation_matrix[0, 1]
 confidence_score = 0.0 if np.isnan(raw_corr) else float(raw_corr) * 100.0
 
 # Peak Detection
-peaks, _ = signal.find_peaks(reconstructed, distance=int(FS * 0.4), prominence=0.15)
+min_distance = max(1, int(FS * 0.35)) # ~170 BPM upper bound threshold
+peaks, _ = signal.find_peaks(reconstructed, distance=min_distance, prominence=0.15)
 
 # Output Signal Quality Metrics
 denoised_noise_power = np.mean((reconstructed - true_clean) ** 2)
@@ -267,6 +269,7 @@ snr_improvement = output_snr_db - snr_db
 
 # --- 5. DASHBOARD DISPLAY ---
 tabs = st.tabs(["Single Signal Analysis", "Batch Performance Suite"])
+triage = clinical_triage_engine(reconstructed, peaks, fs=FS)
 
 with tabs[0]:
     if is_custom_file:
@@ -276,18 +279,15 @@ with tabs[0]:
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Input SNR", f"{snr_db:.2f} dB")
-    col2.metric("AI Quality Score", f"{confidence_score:.1f}%")
-    col3.metric("SNR Gain", f"+{snr_improvement:.2f} dB")
-    col4.metric("Detected Peaks", len(peaks))
+    col2.metric("AI Confidence", f"{confidence_score:.1f}%")
+    col3.metric("Est. Heart Rate", f"{triage['bpm']} BPM")
+    col4.metric("Peaks Counted", len(peaks))
 
     st.markdown("---")
 
     # RHYTHM ASSESSMENT
     peak_intervals = np.diff(peaks)
     interval_variance = np.var(peak_intervals) if len(peak_intervals) > 0 else 0
-
-   # Run Deep Clinical Triage Engine
-    triage = clinical_triage_engine(reconstructed, peaks, fs=FS)
 
     # Display Triage Banner
     if triage["color"] == "error":
@@ -353,7 +353,8 @@ with tabs[1]:
             conf = 0.0 if np.isnan(raw_c) else float(raw_c) * 100.0
             eval_confidences.append(conf)
             
-            pks, _ = signal.find_peaks(rec, distance=int(FS * 0.4), prominence=0.15)
+            min_distance = max(1, int(FS * 0.35))
+            pks, _ = signal.find_peaks(rec, distance=min_distance, prominence=0.15)
             peaks_found.append(len(pks))
 
         eval_col1, eval_col2 = st.columns(2)

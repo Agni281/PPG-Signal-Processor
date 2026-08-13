@@ -3,76 +3,15 @@ import numpy as np
 import scipy.signal as signal
 import torch
 import torch.nn as nn
-import torch.optim as optim
 import plotly.graph_objects as go
 import pandas as pd
-from abc import ABC
-from plotly.subplots import make_subplots
+import os
 
 st.set_page_config(page_title="Remote PPG Signal De-Noiser", layout="wide")
 
-class random_noise(ABC):
-    """Utility for creating realistic synthetic PPG noise for benchmarking and demos."""
-
-    def __init__(self, amplitude=0.3, hum_freq=50.0, drift_level=0.2, fs=50.0, rng=None):
-        self.amplitude = float(amplitude)
-        self.hum_freq = float(hum_freq)
-        self.drift_level = float(drift_level)
-        self.fs = float(fs)
-        self.rng = np.random.default_rng() if rng is None else rng
-
-    def _normalize(self, signal_values):
-        signal_values = np.asarray(signal_values, dtype=np.float64)
-        vmin = np.min(signal_values)
-        vmax = np.max(signal_values)
-        denom = vmax - vmin + 1e-8
-        return (signal_values - vmin) / denom
-
-    def add_hum(self, time_axis, amplitude=None):
-        amp = self.amplitude if amplitude is None else float(amplitude)
-        hum = amp * np.sin(2 * np.pi * self.hum_freq * time_axis)
-        return hum
-
-    def add_drift(self, time_axis, amplitude=None):
-        amp = self.drift_level if amplitude is None else float(amplitude)
-        baseline = amp * np.sin(2 * np.pi * 0.2 * time_axis)
-        return baseline
-
-    def add_white_noise(self, length, amplitude=None):
-        amp = self.amplitude if amplitude is None else float(amplitude)
-        return self.rng.normal(0.0, amp * 0.5, size=length)
-
-    def generate(self, clean_signal, time_axis=None, include_hum=True, include_drift=True, include_white=True):
-        clean_signal = np.asarray(clean_signal, dtype=np.float64)
-        if time_axis is None:
-            time_axis = np.linspace(0.0, len(clean_signal) / max(self.fs, 1.0), len(clean_signal), endpoint=False)
-
-        noise = np.zeros_like(clean_signal, dtype=np.float64)
-        if include_hum:
-            noise += self.add_hum(time_axis)
-        if include_drift:
-            noise += self.add_drift(time_axis)
-        if include_white:
-            noise += self.add_white_noise(len(clean_signal))
-
-        noisy = clean_signal + noise
-        return self._normalize(noisy)
-
-    def __call__(self, clean_signal, time_axis=None, **kwargs):
-        return self.generate(clean_signal, time_axis=time_axis, **kwargs)
-
-    def __repr__(self):
-        return (
-            f"random_noise(amplitude={self.amplitude:.3f}, hum_freq={self.hum_freq:.1f}Hz, "
-            f"drift_level={self.drift_level:.3f}, fs={self.fs:.1f})"
-        )
-
-st.set_page_config(page_title="Remote PPG Signal De-Noiser", layout="wide")
-
-st.title("Remote Biosensor Signal De-Noiser")
-st.markdown("**An Edge-AI & Signal Processing Pipeline for Rural Healthcare**")
-
-# --- 1. MODEL DEFINITION (CORRECTED CHANNEL PROGRESSION) ---
+# ==========================================
+# 1. 1D U-NET MODEL ARCHITECTURE
+# ==========================================
 class SignalDenoisingUNet1D(nn.Module):
     def __init__(self):
         super(SignalDenoisingUNet1D, self).__init__()
@@ -82,26 +21,37 @@ class SignalDenoisingUNet1D(nn.Module):
         self.dec1 = nn.Sequential(nn.ConvTranspose1d(32, 1, kernel_size=5, stride=2, padding=2, output_padding=1), nn.Sigmoid())
 
     def forward(self, x):
-        e1 = self.enc1(x)       # (B, 16, L/2)
-        e2 = self.enc2(e1)      # (B, 32, L/4)
-        d2 = self.dec2(e2)      # (B, 16, L/2)
-        cat1 = torch.cat((d2, e1), dim=1) # (B, 32, L/2)
-        return self.dec1(cat1)  # (B, 1, L)
+        e1 = self.enc1(x)
+        e2 = self.enc2(e1)
+        d2 = self.dec2(e2)
+        cat1 = torch.cat((d2, e1), dim=1)  # Skip Connection
+        return self.dec1(cat1)
 
-# --- 2. SIGNAL HELPERS & METRICS ---
 
-# --- CACHED FAST FILE LOADER ---
+@st.cache_resource
+def load_trained_model(weights_path='unet_realdata_weights.pth'):
+    model = SignalDenoisingUNet1D()
+    if os.path.exists(weights_path):
+        model.load_state_dict(torch.load(weights_path, map_location=torch.device('cpu')))
+        st.sidebar.success("Loaded pre-trained U-Net weights!")
+    else:
+        st.sidebar.warning("`unet_realdata_weights.pth` not found. Using initialized model weights.")
+    model.eval()
+    return model
+
+
+# ==========================================
+# 2. HELPER & PARSING FUNCTIONS
+# ==========================================
 @st.cache_data
 def load_uploaded_signal(uploaded_file):
     df = pd.read_csv(uploaded_file)
     numeric_df = df.select_dtypes(include=[np.number])
-    
     if numeric_df.empty:
-        raise ValueError("No numeric data columns found in the CSV.")
+        raise ValueError("No numeric data columns found in CSV.")
     
     cols_lower = [str(c).lower() for c in numeric_df.columns]
     
-    # Priority check for pleth_1 / pleth / ppg columns
     if 'pleth_1' in cols_lower:
         idx = cols_lower.index('pleth_1')
     elif any('pleth' in c for c in cols_lower):
@@ -116,52 +66,11 @@ def load_uploaded_signal(uploaded_file):
     return raw_signal.astype(np.float32)
 
 def generate_synthetic_ppg(t, hr_bpm):
-    """Generates a dynamic cardiac wave for given BPM."""
     freq = hr_bpm / 60.0
-    ppg = np.sin(2 * np.pi * freq * t) + 0.35 * np.sin(4 * np.pi * freq * t + 0.5)
-    return (ppg - np.min(ppg)) / (np.max(ppg) - np.min(ppg) + 1e-8)
-
-def calculate_sqi(sig, fs=50.0):
-    """Calculates Signal Quality Index using spectral energy in cardiac band (0.5 - 4 Hz)."""
-    freqs, psd = signal.welch(sig, fs=fs, nperseg=len(sig))
-    cardiac_band_power = np.sum(psd[(freqs >= 0.5) & (freqs <= 4.0)])
-    total_power = np.sum(psd) + 1e-8
-    sqi = (cardiac_band_power / total_power) * 100.0
-    return np.clip(sqi, 0.0, 100.0)
-
-def clinical_triage_engine(reconstructed, peaks, fs=50.0):
-    if len(peaks) < 2:
-        return {
-            "status": "CRITICAL / UNREADABLE DATA",
-            "color": "error",
-            "bpm": 0,
-            "sdnn": 0.0,
-            "category": "Artifact",
-            "advice": [" **Insufficient Peak Resolution:** Waveform amplitude is suppressed or distorted."]
-        }
-    
-    rr_intervals_sec = np.diff(peaks) / fs
-    rr_intervals_ms = rr_intervals_sec * 1000.0
-    
-    mean_rr_sec = np.mean(rr_intervals_sec)
-    bpm = int(60.0 / mean_rr_sec) if mean_rr_sec > 0 else 0
-    sdnn = np.std(rr_intervals_ms)
-    
-    advice_notes = []
-    if bpm < 50:
-        status, color, category = "ALERT — SEVERE BRADYCARDIA", "warning", "Bradycardia"
-        advice_notes.append(f" **Low Heart Rate ({bpm} BPM):** Pulse rate below normal resting threshold.")
-    elif bpm > 110:
-        status, color, category = "ALERT — TACHYCARDIA DETECTED", "warning", "Tachycardia"
-        advice_notes.append(f" **Elevated Heart Rate ({bpm} BPM):** Pulse rate exceeds physiological target.")
-    elif sdnn > 120.0:
-        status, color, category = "ALERT — HIGH RHYTHM VARIABILITY", "warning", "Arrhythmia Risk"
-        advice_notes.append(f" **Irregular Pulse Cadence (SDNN: {sdnn:.1f} ms):** High beat-to-beat timing variance.")
-    else:
-        status, color, category = "NOMINAL — STABLE SINUS RHYTHM", "success", "Normal"
-        advice_notes.append(f" **Normal Parameters:** Heart rate ({bpm} BPM) and pulse cadence (SDNN: {sdnn:.1f} ms) are stable.")
-
-    return {"status": status, "color": color, "bpm": bpm, "sdnn": sdnn, "category": category, "advice": advice_notes}
+    clean = 0.5 * (1 + np.sin(2 * np.pi * freq * t))
+    dicrotic = 0.15 * np.exp(-((np.mod(t * freq, 1) - 0.35) ** 2) / 0.01)
+    signal_out = clean + dicrotic
+    return (signal_out - np.min(signal_out)) / (np.max(signal_out) - np.min(signal_out) + 1e-8)
 
 def butter_bandpass_filter(data, lowcut=0.5, highcut=4.0, fs=50.0, order=2):
     nyq = 0.5 * fs
@@ -169,234 +78,126 @@ def butter_bandpass_filter(data, lowcut=0.5, highcut=4.0, fs=50.0, order=2):
     b, a = signal.butter(order, [low, high], btype='band')
     return signal.filtfilt(b, a, data)
 
-@st.cache_resource
-def train_model():
-    np.random.seed(42)
-    torch.manual_seed(42)
-    length = 200
-    FS = 50.0
-    duration = 4.0
-    t = np.linspace(0, duration, length)
-    
-    clean_dataset, noisy_dataset = [], []
-    for _ in range(500):
-        rand_hr = np.random.randint(50, 130)
-        clean_wave = generate_synthetic_ppg(t, rand_hr)
-        noisy_wave = clean_wave + 0.3 * np.sin(2 * np.pi * 50 * t) + 0.2 * np.sin(2 * np.pi * 0.2 * t) + np.random.normal(0, 0.15, length)
-        noisy_wave = (noisy_wave - np.min(noisy_wave)) / (np.max(noisy_wave) - np.min(noisy_wave) + 1e-8)
-        clean_dataset.append(clean_wave)
-        noisy_dataset.append(noisy_wave)
-        
-    clean_tensor = torch.FloatTensor(np.array(clean_dataset)).unsqueeze(1)
-    noisy_tensor = torch.FloatTensor(np.array(noisy_dataset)).unsqueeze(1)
-    
-    model = SignalDenoisingUNet1D()
-    criterion = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.005)
-    
-    for epoch in range(40):
-        permutation = torch.randperm(noisy_tensor.size(0))
-        for i in range(0, noisy_tensor.size(0), 32):
-            indices = permutation[i:i+32]
-            optimizer.zero_grad()
-            outputs = model(noisy_tensor[indices])
-            loss = criterion(outputs, clean_tensor[indices])
-            loss.backward()
-            optimizer.step()
-    return model
+def calculate_sqi(sig, fs=50.0):
+    freqs, psd = signal.welch(sig, fs=fs, nperseg=len(sig))
+    cardiac_band_power = np.sum(psd[(freqs >= 0.5) & (freqs <= 4.0)])
+    total_power = np.sum(psd) + 1e-8
+    sqi = (cardiac_band_power / total_power) * 100.0
+    return np.clip(sqi, 0.0, 100.0)
 
-model = train_model()
 
-# --- 3. SIDEBAR CONFIGURATION ---
-st.sidebar.header("Data & Settings")
-
+# ==========================================
+# 3. SIDEBAR CONFIGURATION
+# ==========================================
+st.sidebar.title("PPG Telemetry Control")
 data_source = st.sidebar.radio("Data Mode", ["Synthetic Generator", "Upload Real PPG Stream"])
 
 if data_source == "Upload Real PPG Stream":
     uploaded_file = st.sidebar.file_uploader("Upload CSV Stream", type=["csv", "txt"])
-    FS = st.sidebar.number_input("Sensor Sampling Rate (Hz)", min_value=1.0, max_value=1000.0, value=500.0, step=10.0)
-    target_hr = 75  # Default fallback
-    
-    # Hide synthetic noise controls since real data has its own natural noise
-    noise_amp = 0.0
-    hum_freq = 50
-    drift_level = 0.0
-
+    FS_NATIVE = st.sidebar.number_input("Sensor Sampling Rate (Hz)", min_value=1.0, max_value=1000.0, value=500.0, step=10.0)
+    target_hr = 75
+    noise_amp, hum_freq, drift_level = 0.0, 50, 0.0
 else:
     uploaded_file = None
-    FS = 50.0
+    FS_NATIVE = 50.0
     target_hr = st.sidebar.slider("Simulated Heart Rate (BPM)", 50, 140, 75)
-    
-    # Only display synthetic noise controls in Synthetic Mode
     st.sidebar.subheader("Synthetic Noise Controls")
     noise_amp = st.sidebar.slider("Noise Amplitude", 0.0, 0.8, 0.3, 0.05)
     hum_freq = st.sidebar.slider("Grid Hum Frequency (Hz)", 10, 100, 50, 10)
     drift_level = st.sidebar.slider("Baseline Drift", 0.0, 0.5, 0.2, 0.05)
 
 
-# --- 4. DATA PROCESSING PIPELINE ---
+# ==========================================
+# 4. DATA PROCESSING PIPELINE
+# ==========================================
 TARGET_LENGTH = 200
+MODEL_FS = 50.0
 duration = 4.0
 t = np.linspace(0, duration, TARGET_LENGTH)
-is_custom_file = False
-true_clean = None  # None for uploaded streams (no ground truth benchmark)
+true_clean = None
 
 if data_source == "Upload Real PPG Stream" and uploaded_file is not None:
     try:
         full_signal = load_uploaded_signal(uploaded_file)
-        window_size = int(FS * duration)
+        window_size = int(FS_NATIVE * duration)
         
         if len(full_signal) > window_size:
-            max_start_sec = int((len(full_signal) - window_size) / FS)
+            max_start_sec = int((len(full_signal) - window_size) / FS_NATIVE)
             start_sec = st.sidebar.slider("Window Start Offset (seconds)", 0, max(1, max_start_sec), 0)
-            start_idx = int(start_sec * FS)
+            start_idx = int(start_sec * FS_NATIVE)
             raw_data = full_signal[start_idx : start_idx + window_size]
         else:
             raw_data = full_signal
 
-        if len(raw_data) != TARGET_LENGTH:
-            raw_data = signal.resample(raw_data, TARGET_LENGTH)
+        # Resample native sampling rate (e.g. 500Hz) down to 50Hz (200 points)
+        num_target_samples = int(len(raw_data) * (MODEL_FS / FS_NATIVE))
+        resampled = signal.resample(raw_data, num_target_samples)
+        
+        if len(resampled) != TARGET_LENGTH:
+            resampled = signal.resample(resampled, TARGET_LENGTH)
             
-        # Real signal is processed directly as raw input (NO synthetic noise added)
-        raw_noisy = (raw_data - np.min(raw_data)) / (np.max(raw_data) - np.min(raw_data) + 1e-8)
-        is_custom_file = True
-        st.sidebar.success(f"Custom Stream Loaded! ({len(full_signal):,} points)")
+        raw_noisy = (resampled - np.min(resampled)) / (np.max(resampled) - np.min(resampled) + 1e-8)
+        st.sidebar.success(f"Stream Loaded! ({len(full_signal):,} total points)")
     except Exception as e:
         st.sidebar.error(f"Error parsing file: {e}. Reverting to Synthetic.")
         true_clean = generate_synthetic_ppg(t, target_hr)
         raw_noisy = true_clean
 else:
-    # Synthetic Mode generates ground truth AND applies synthetic noise sliders
     true_clean = generate_synthetic_ppg(t, target_hr)
-    high_freq_noise = noise_amp * np.sin(2 * np.pi * hum_freq * t)
-    baseline_drift = drift_level * np.sin(2 * np.pi * 0.2 * t)
+    high_freq = noise_amp * np.sin(2 * np.pi * hum_freq * t)
+    drift = drift_level * np.sin(2 * np.pi * 0.2 * t)
     random_noise = np.random.normal(0, noise_amp * 0.5, TARGET_LENGTH)
-    
-    raw_noisy = true_clean + high_freq_noise + baseline_drift + random_noise
+    raw_noisy = true_clean + high_freq + drift + random_noise
     raw_noisy = (raw_noisy - np.min(raw_noisy)) / (np.max(raw_noisy) - np.min(raw_noisy) + 1e-8)
 
-# Synthetic corruption is only applied in synthetic mode; uploaded streams stay as-is.
-if not is_custom_file and true_clean is not None:
-    high_freq_noise = noise_amp * np.sin(2 * np.pi * hum_freq * t)
-    baseline_drift = drift_level * np.sin(2 * np.pi * 0.2 * t)
-    random_noise = np.random.normal(0, noise_amp * 0.5, TARGET_LENGTH)
 
-    raw_noisy = true_clean + high_freq_noise + baseline_drift + random_noise
-    raw_noisy = (raw_noisy - np.min(raw_noisy)) / (np.max(raw_noisy) - np.min(raw_noisy) + 1e-8)
+# ==========================================
+# 5. MODEL INFERENCE & METRICS
+# ==========================================
+model = load_trained_model()
 
-# Bandpass filtering
-filtered_signal = butter_bandpass_filter(raw_noisy, lowcut=0.5, highcut=4.0, fs=FS)
-filtered_signal = (filtered_signal - np.min(filtered_signal)) / (np.max(filtered_signal) - np.min(filtered_signal) + 1e-8)
+# Stage 2: Bandpass Filter
+filtered = butter_bandpass_filter(raw_noisy, lowcut=0.5, highcut=4.0, fs=MODEL_FS)
+filtered = (filtered - np.min(filtered)) / (np.max(filtered) - np.min(filtered) + 1e-8)
 
-# Inference
-model.eval()
+# Stage 3: U-Net Inference
+input_tensor = torch.FloatTensor(raw_noisy).unsqueeze(0).unsqueeze(0)
 with torch.no_grad():
-    input_sample = torch.FloatTensor(raw_noisy).unsqueeze(0).unsqueeze(0)
-    reconstructed = model(input_sample).squeeze().numpy()
+    reconstructed = model(input_tensor).squeeze().numpy()
 
-# Peak Detection & Metrics
-min_distance = max(1, int(FS * 0.35))
+sqi_score = calculate_sqi(reconstructed, fs=MODEL_FS)
+min_distance = max(1, int(MODEL_FS * 0.35))
 peaks, _ = signal.find_peaks(reconstructed, distance=min_distance, prominence=0.15)
-confidence_score = calculate_sqi(reconstructed, fs=FS)
 
-# --- 5. DASHBOARD TABS ---
-tabs = st.tabs(["Single Signal Analysis", "Batch Performance Suite"])
-triage = clinical_triage_engine(reconstructed, peaks, fs=FS)
+if len(peaks) >= 2:
+    est_bpm = 60.0 / np.mean(np.diff(t[peaks]))
+    bpm_str = f"{est_bpm:.1f} BPM"
+else:
+    bpm_str = "N/A"
 
-with tabs[0]:
-    if is_custom_file:
-        st.info(" **Source:** Processing Custom Uploaded Signal Stream")
-    else:
-        st.info(" **Source:** Using Built-in Dynamic PPG Generator")
 
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Signal Quality (SQI)", f"{confidence_score:.1f}%")
-    col2.metric("Est. Heart Rate", f"{triage['bpm']} BPM" if triage['bpm'] > 0 else "N/A")
-    col3.metric("HRV (SDNN)", f"{triage['sdnn']:.1f} ms" if triage['sdnn'] > 0 else "N/A")
-    col4.metric("Peaks Counted", len(peaks))
+# ==========================================
+# 6. STREAMLIT DISPLAY DASHBOARD
+# ==========================================
+st.title("🫀 Remote PPG Signal Processing Engine")
+st.markdown("1D Convolutional U-Net Denoising for Optical Telemetry Streams")
 
-    st.markdown("---")
+col1, col2, col3 = st.columns(3)
+col1.metric("Signal Quality (SQI)", f"{sqi_score:.1f}%")
+col2.metric("Estimated Heart Rate", bpm_str)
+col3.metric("Detected Systolic Peaks", len(peaks))
 
-    # Display Triage Banner
-    if triage["color"] == "error":
-        st.error(f"**Clinical Status:** {triage['status']}")
-    elif triage["color"] == "warning":
-        st.warning(f"**Clinical Status:** {triage['status']}")
-    else:
-        st.success(f"**Clinical Status:** {triage['status']}")
+# Plotly Visualizations
+fig = go.Figure()
+fig.add_trace(go.Scatter(x=t, y=raw_noisy, mode='lines', name='Stage 1: Raw Input', line=dict(color='crimson')))
+fig.add_trace(go.Scatter(x=t, y=filtered, mode='lines', name='Stage 2: Bandpass Filtered', line=dict(color='orange')))
+fig.add_trace(go.Scatter(x=t, y=reconstructed, mode='lines', name='Stage 3: 1D U-Net Output', line=dict(color='royalblue', width=3)))
 
-    # Clinical Guidance Box
-    with st.expander("🩺 **Clinical Telemetry Guidance & Biomarkers**", expanded=True):
-        st.markdown("##### **Actionable Insights:**")
-        for note in triage["advice"]:
-            st.markdown(f"- {note}")
+if len(peaks) > 0:
+    fig.add_trace(go.Scatter(x=t[peaks], y=reconstructed[peaks], mode='markers', name='Systolic Peaks', marker=dict(color='purple', size=10)))
 
-    # Interactive Subplots
-    fig = make_subplots(rows=4, cols=1, subplot_titles=(
-        "Stage 1: Raw Telemetry Stream (With Noise)",
-        "Stage 2: Classical Bandpass Filter (0.5 - 4.0 Hz)",
-        f"Stage 3: AI Reconstructed Wave & Peaks (SQI: {confidence_score:.1f}%)",
-        "Stage 4: Ground Truth Reference Signal"
-    ))
+if true_clean is not None:
+    fig.add_trace(go.Scatter(x=t, y=true_clean, mode='lines', name='Ground Truth Reference', line=dict(color='green', dash='dash')))
 
-    fig.add_trace(go.Scatter(x=t, y=raw_noisy, mode='lines', name='Raw Noisy', line=dict(color='crimson')), row=1, col=1)
-    fig.add_trace(go.Scatter(x=t, y=filtered_signal, mode='lines', name='Bandpass Filtered', line=dict(color='darkorange')), row=2, col=1)
-    fig.add_trace(go.Scatter(x=t, y=reconstructed, mode='lines', name='AI Reconstructed', line=dict(color='royalblue', width=2)), row=3, col=1)
-    
-    if len(peaks) > 0:
-        fig.add_trace(go.Scatter(x=t[peaks], y=reconstructed[peaks], mode='markers', name='Systolic Peaks',
-                                 marker=dict(color='purple', size=8, symbol='diamond')), row=3, col=1)
-
-    fig.add_trace(go.Scatter(x=t, y=true_clean, mode='lines', name='Ground Truth', line=dict(color='forestgreen', dash='dash')), row=4, col=1)
-
-    fig.update_layout(height=800, template="plotly_white", showlegend=False)
-    st.plotly_chart(fig, use_container_width=True)
-
-# --- RESTORED BATCH EVALUATION SUITE WITH MEAN CALCULATOR ---
-with tabs[1]:
-    st.subheader("Pipeline Performance Across Multiple Iterations")
-    st.markdown("Runs **50 automated test iterations** under current noise configurations to evaluate stability.")
-    
-    if st.button("Run Batch Evaluation"):
-        eval_confidences = []
-        peaks_found = []
-        eval_bpms = []
-        
-        for _ in range(50):
-            # Introduce phase shift / noise variation per iteration
-            shift = np.random.randint(-15, 15)
-            sample_clean = np.roll(true_clean, shift)
-            sample_noise = noise_amp * np.sin(2 * np.pi * hum_freq * t) + drift_level * np.sin(2 * np.pi * 0.2 * t) + np.random.normal(0, noise_amp * 0.5, TARGET_LENGTH)
-            sample_noisy = (sample_clean + sample_noise)
-            sample_noisy = (sample_noisy - np.min(sample_noisy)) / (np.max(sample_noisy) - np.min(sample_noisy) + 1e-8)
-            
-            inp = torch.FloatTensor(sample_noisy).unsqueeze(0).unsqueeze(0)
-            with torch.no_grad():
-                rec = model(inp).squeeze().numpy()
-            
-            sqi = calculate_sqi(rec, fs=FS)
-            eval_confidences.append(sqi)
-            
-            pks, _ = signal.find_peaks(rec, distance=min_distance, prominence=0.15)
-            peaks_found.append(len(pks))
-            
-            if len(pks) >= 2:
-                eval_bpms.append(60.0 / np.mean(np.diff(t[pks])))
-
-        # Batch Mean Summary Metrics
-        eval_col1, eval_col2, eval_col3 = st.columns(3)
-        eval_col1.metric("Mean Quality Score (SQI)", f"{np.mean(eval_confidences):.1f}%")
-        eval_col2.metric("Mean Peaks Counted", f"{np.mean(peaks_found):.1f}")
-        eval_col3.metric("Mean Estimated BPM", f"{np.mean(eval_bpms):.1f} BPM" if len(eval_bpms) > 0 else "N/A")
-        
-        # Plot distribution histogram using Plotly
-        hist_fig = go.Figure()
-        hist_fig.add_trace(go.Histogram(x=eval_confidences, nbinsx=15, marker_color='royalblue', opacity=0.75))
-        hist_fig.update_layout(
-            title="Distribution of Signal Quality Scores (SQI % across 50 runs)",
-            xaxis_title="Quality Score (%)",
-            yaxis_title="Sample Count",
-            template="plotly_white",
-            height=350
-        )
-        st.plotly_chart(hist_fig, use_container_width=True)
+fig.update_layout(title="PPG Telemetry Pipeline Stages", xaxis_title="Time (seconds)", yaxis_title="Normalized Amplitude", height=500)
+st.plotly_chart(fig, use_container_width=True)

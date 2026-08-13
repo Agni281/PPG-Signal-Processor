@@ -69,13 +69,19 @@ class SignalDenoisingUNet1D(nn.Module):
 
 
 @st.cache_resource
-def load_trained_model(weights_path='unet_realdata_weights.pth'):
+def load_trained_model():
     model = SignalDenoisingUNet1D()
+    
+    # Locate directory of current deploy.py script
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    weights_path = os.path.join(script_dir, 'unet_realdata_weights.pth')
+    
     if os.path.exists(weights_path):
         model.load_state_dict(torch.load(weights_path, map_location=torch.device('cpu')))
         st.sidebar.success("Loaded pre-trained U-Net weights!")
     else:
-        st.sidebar.warning("`unet_realdata_weights.pth` not found. Using initialized model weights.")
+        st.sidebar.warning(f"`unet_realdata_weights.pth` not found at {weights_path}.")
+        
     model.eval()
     return model
 

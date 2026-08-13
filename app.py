@@ -10,27 +10,40 @@ from ipywidgets import interact, FloatSlider, IntSlider
 np.random.seed(42)
 torch.manual_seed(42)
 
-# --- 1. MODEL DEFINITION ---
-class SignalDenoisingAutoencoder(nn.Module):
+# --- 1. MODEL DEFINITION (1D U-NET WITH SKIP CONNECTIONS) ---
+class SignalDenoisingUNet1D(nn.Module):
     def __init__(self):
-        super(SignalDenoisingAutoencoder, self).__init__()
-        self.encoder = nn.Sequential(
+        super(SignalDenoisingUNet1D, self).__init__()
+        
+        # Encoder Path
+        self.enc1 = nn.Sequential(
             nn.Conv1d(1, 16, kernel_size=5, stride=2, padding=2),
-            nn.ReLU(),
+            nn.ReLU()
+        )
+        self.enc2 = nn.Sequential(
             nn.Conv1d(16, 32, kernel_size=5, stride=2, padding=2),
             nn.ReLU()
         )
-        self.decoder = nn.Sequential(
+        
+        # Decoder Path with Skip Connections
+        self.dec2 = nn.Sequential(
             nn.ConvTranspose1d(32, 16, kernel_size=5, stride=2, padding=2, output_padding=1),
-            nn.ReLU(),
-            nn.ConvTranspose1d(16, 1, kernel_size=5, stride=2, padding=2, output_padding=1),
+            nn.ReLU()
+        )
+        self.dec1 = nn.Sequential(
+            nn.ConvTranspose1d(32, 1, kernel_size=5, stride=2, padding=2, output_padding=1),
             nn.Sigmoid()
         )
 
     def forward(self, x):
-        x = self.encoder(x)
-        x = self.decoder(x)
-        return x
+        e1 = self.enc1(x)  # Shape: (batch, 16, 100)
+        e2 = self.enc2(e1) # Shape: (batch, 32, 50)
+        
+        d2 = self.dec2(e2) # Shape: (batch, 16, 100)
+        cat1 = torch.cat((d2, e1), dim=1) # Skip connection from e1
+        
+        out = self.dec1(cat1) # Shape: (batch, 1, 200)
+        return out
 
 def butter_bandpass_filter(data, lowcut=0.5, highcut=4.0, fs=50.0, order=2):
     nyq = 0.5 * fs
@@ -53,12 +66,12 @@ def generate_base_dataset(num_samples=500, length=200):
         noisy_dataset.append(noisy_wave)
     return np.array(clean_dataset), np.array(noisy_dataset)
 
-print("Training base model...")
+print("Training base model for interactive dashboard...")
 clean_data, noisy_data = generate_base_dataset()
 clean_tensor = torch.FloatTensor(clean_data).unsqueeze(1)
 noisy_tensor = torch.FloatTensor(noisy_data).unsqueeze(1)
 
-model = SignalDenoisingAutoencoder()
+model = SignalDenoisingUNet1D()
 criterion = nn.MSELoss()
 optimizer = optim.Adam(model.parameters(), lr=0.005)
 
@@ -112,19 +125,19 @@ def run_interactive_pipeline(noise_level, hum_freq, drift_level):
     output_snr_db = 10 * np.log10(signal_power / denoised_noise_power) if denoised_noise_power > 0 else 100.0
     snr_improvement = output_snr_db - snr_db
 
-    print(f"Input SNR: {snr_db:.2f} dB | AI Quality Score: {confidence_score:.2f}% | SNR Improvement: +{snr_improvement:.2f} dB | Peaks Found: {len(peaks)}")
+    print(f"SNR: {snr_db:.2f} dB | Confidence: {confidence_score:.2f}% | SNR Improvement: +{snr_improvement:.2f} dB | Peaks Detected: {len(peaks)}")
     
     # RHYTHM ASSESSMENT
     peak_intervals = np.diff(peaks)
     interval_variance = np.var(peak_intervals) if len(peak_intervals) > 0 else 0
 
-    print(f"SNR: {snr_db:.2f} dB | Confidence: {confidence_score:.2f}% | Peaks Detected: {len(peaks)}")
     if confidence_score < 70.0:
         triage_msg = "Conclusion: UNRELIABLE DATA - Noise too high for diagnostic safety."
-    elif interval_variance > 2.0:
+    elif interval_variance > 0.05:
         triage_msg = "Conclusion: ALERT - Potential Arrhythmia / Irregular Rhythm Detected."
     else:
         triage_msg = "Conclusion: HEALTHY - Normal Sinus Rhythm."
+
     print(triage_msg)
     
     plt.figure(figsize=(12, 9))
@@ -140,10 +153,10 @@ def run_interactive_pipeline(noise_level, hum_freq, drift_level):
     plt.legend(loc='upper right')
     
     plt.subplot(4, 1, 3)
-    plt.plot(reconstructed, color='royalblue', linewidth=2, label='AI Denoised Signal')
+    plt.plot(reconstructed, color='royalblue', linewidth=2, label='AI Denoised Signal (1D U-Net)')
     if len(peaks) > 0:
-        plt.scatter(peaks, reconstructed[peaks], color='darkmagenta', s=90, zorder=5, label=f'Detected Peaks ({len(peaks)})')
-    plt.title(f'AI Reconstructed Signal (Quality Score: {confidence_score:.1f}%)')
+        plt.scatter(peaks, reconstructed[peaks], color='darkmagenta', s=90, zorder=5, label=f'Systolic Peaks ({len(peaks)})')
+    plt.title(f'AI Reconstructed Signal (Confidence: {confidence_score:.1f}%)')
     plt.legend(loc='upper right')
     
     plt.subplot(4, 1, 4)

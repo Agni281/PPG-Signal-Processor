@@ -13,27 +13,40 @@ st.markdown("""
 **An Edge-AI & Signal Processing Pipeline for Rural Healthcare**
 """)
 
-# --- 1. MODEL DEFINITION ---
-class SignalDenoisingAutoencoder(nn.Module):
+# --- 1. MODEL DEFINITION (1D U-NET WITH SKIP CONNECTIONS) ---
+class SignalDenoisingUNet1D(nn.Module):
     def __init__(self):
-        super(SignalDenoisingAutoencoder, self).__init__()
-        self.encoder = nn.Sequential(
+        super(SignalDenoisingUNet1D, self).__init__()
+        
+        # Encoder Path
+        self.enc1 = nn.Sequential(
             nn.Conv1d(1, 16, kernel_size=5, stride=2, padding=2),
-            nn.ReLU(),
+            nn.ReLU()
+        )
+        self.enc2 = nn.Sequential(
             nn.Conv1d(16, 32, kernel_size=5, stride=2, padding=2),
             nn.ReLU()
         )
-        self.decoder = nn.Sequential(
+        
+        # Decoder Path with Skip Connections
+        self.dec2 = nn.Sequential(
             nn.ConvTranspose1d(32, 16, kernel_size=5, stride=2, padding=2, output_padding=1),
-            nn.ReLU(),
-            nn.ConvTranspose1d(16, 1, kernel_size=5, stride=2, padding=2, output_padding=1),
+            nn.ReLU()
+        )
+        self.dec1 = nn.Sequential(
+            nn.ConvTranspose1d(32, 1, kernel_size=5, stride=2, padding=2, output_padding=1),
             nn.Sigmoid()
         )
 
     def forward(self, x):
-        x = self.encoder(x)
-        x = self.decoder(x)
-        return x
+        e1 = self.enc1(x)  # Shape: (batch, 16, 100)
+        e2 = self.enc2(e1) # Shape: (batch, 32, 50)
+        
+        d2 = self.dec2(e2) # Shape: (batch, 16, 100)
+        cat1 = torch.cat((d2, e1), dim=1) # Skip connection from e1
+        
+        out = self.dec1(cat1) # Shape: (batch, 1, 200)
+        return out
 
 # --- 2. DATA LOADERS & FILTERING ---
 def butter_bandpass_filter(data, lowcut=0.5, highcut=4.0, fs=50.0, order=2):
@@ -46,14 +59,14 @@ def butter_bandpass_filter(data, lowcut=0.5, highcut=4.0, fs=50.0, order=2):
 
 @st.cache_data
 def load_default_signal(length=200):
-    """Generates a benchmark reference wave."""
+    """Generates a benchmark PPG wave."""
     t = np.linspace(0, 4 * np.pi, length)
     clean_wave = np.sin(t) + 0.5 * np.sin(2 * t) + 0.2 * np.sin(3 * t)
     return (clean_wave - np.min(clean_wave)) / (np.max(clean_wave) - np.min(clean_wave) + 1e-8)
 
 @st.cache_resource
 def train_model():
-    """Trains the PyTorch autoencoder model once and caches it."""
+    """Trains the 1D U-Net PyTorch model once and caches it."""
     np.random.seed(42)
     torch.manual_seed(42)
     
@@ -74,7 +87,7 @@ def train_model():
     clean_tensor = torch.FloatTensor(np.array(clean_dataset)).unsqueeze(1)
     noisy_tensor = torch.FloatTensor(np.array(noisy_dataset)).unsqueeze(1)
     
-    model = SignalDenoisingAutoencoder()
+    model = SignalDenoisingUNet1D()
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=0.005)
     
@@ -93,19 +106,18 @@ def train_model():
 model = train_model()
 
 # --- 3. SIDEBAR CONTROLS & FILE UPLOADER ---
-st.sidebar.header("1. Upload Custom Sensor Signal")
+st.sidebar.header("Signal Noise Parameters")
+st.sidebar.markdown("Simulate environmental and device interference:")
+
 uploaded_file = st.sidebar.file_uploader(
-    "Upload 1D CSV/TXT File", 
+    "Upload Custom Biosensor Signal (CSV/TXT)", 
     type=["csv", "txt"],
-    help="Upload a file containing single-column numeric sensor readings."
+    help="Upload a 1D CSV/TXT file with raw sensor telemetry."
 )
 
-st.sidebar.markdown("---")
-st.sidebar.header("2. Noise Simulation Parameters")
-
 noise_amp = st.sidebar.slider("Noise Amplitude", 0.0, 0.8, 0.3, 0.05)
-hum_freq = st.sidebar.slider("Power Line Hum (Hz)", 10, 100, 50, 10)
-drift_level = st.sidebar.slider("Baseline Drift", 0.0, 0.5, 0.2, 0.05)
+hum_freq = st.sidebar.slider("Grid Hum Frequency (Hz)", 10, 100, 50, 10)
+drift_level = st.sidebar.slider("Baseline Drift (Breathing)", 0.0, 0.5, 0.2, 0.05)
 
 # --- 4. DATA PROCESSING PIPELINE ---
 FS = 50.0  # Sampling frequency in Hz
@@ -129,7 +141,7 @@ if uploaded_file is not None:
         is_custom_file = True
         st.sidebar.success("Custom Signal Loaded!")
     except Exception as e:
-        st.sidebar.error(f"Error loading file: {e}. Defaulting to benchmark signal.")
+        st.sidebar.error(f"Error loading file: {e}. Defaulting to PPG reference signal.")
         true_clean = load_default_signal(length)
 else:
     true_clean = load_default_signal(length)
@@ -151,7 +163,7 @@ signal_power = np.mean(true_clean ** 2)
 noise_power = np.mean((raw_noisy - true_clean) ** 2)
 snr_db = 10 * np.log10(signal_power / noise_power) if noise_power > 0 else 100.0
 
-# AI Inference
+# AI U-Net Inference
 model.eval()
 with torch.no_grad():
     input_sample = torch.FloatTensor(raw_noisy).unsqueeze(0).unsqueeze(0)
@@ -177,7 +189,7 @@ with tabs[0]:
     if is_custom_file:
         st.info(" **Source:** Processing Custom Uploaded Signal Stream")
     else:
-        st.info(" **Source:** Using Built-in Benchmark Synthetic Reference Wave")
+        st.info(" **Source:** Using Built-in Benchmark PPG Signal")
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Input SNR", f"{snr_db:.2f} dB")
@@ -187,36 +199,35 @@ with tabs[0]:
 
     st.markdown("---")
 
-    # RHYTHM & SIGNAL QUALITY ASSESSMENT
+    # RHYTHM ASSESSMENT
     peak_intervals = np.diff(peaks)
     interval_variance = np.var(peak_intervals) if len(peak_intervals) > 0 else 0
 
     if confidence_score < 70.0:
         st.error(" **Conclusion: UNRELIABLE DATA** — Environmental noise too severe for diagnostic assessment.")
-    elif interval_variance > 2.0:
+    elif interval_variance > 0.05:
         st.warning(" **Conclusion: ALERT** — High Heart Rate Variability / Potential Arrhythmia detected.")
     else:
         st.success(" **Conclusion: HEALTHY** — Stable sinus rhythm detected.")
 
-
     fig, axs = plt.subplots(4, 1, figsize=(12, 10))
 
-    axs[0].plot(raw_noisy, color='crimson', label='Raw Noisy Input')
-    axs[0].set_title("Stage 1: Raw Telemetry Stream")
+    axs[0].plot(raw_noisy, color='crimson', label='Raw Noisy Signal')
+    axs[0].set_title("Stage 1: Raw Telemetry Stream (Rural Clinic)")
     axs[0].legend(loc="upper right")
 
     axs[1].plot(filtered_signal, color='darkorange', label='SciPy Bandpass Filtered (0.5 - 4.0 Hz)')
     axs[1].set_title("Stage 2: Classical Bandpass Filter")
     axs[1].legend(loc="upper right")
 
-    axs[2].plot(reconstructed, color='royalblue', linewidth=2, label='AI Reconstructed Signal')
+    axs[2].plot(reconstructed, color='royalblue', linewidth=2, label='AI Denoised Signal (1D U-Net)')
     if len(peaks) > 0:
-        axs[2].scatter(peaks, reconstructed[peaks], color='darkmagenta', s=80, zorder=5, label=f'Detected Peaks ({len(peaks)})')
-    axs[2].set_title(f"Stage 3: AI Reconstructed Wave (Quality Score: {confidence_score:.1f}%)")
+        axs[2].scatter(peaks, reconstructed[peaks], color='darkmagenta', s=80, zorder=5, label=f'Systolic Peaks ({len(peaks)})')
+    axs[2].set_title(f"Stage 3: AI Reconstructed Wave & Feature Extraction (Confidence: {confidence_score:.1f}%)")
     axs[2].legend(loc="upper right")
 
     axs[3].plot(true_clean, color='forestgreen', linestyle='--', label='Ground Truth Reference')
-    axs[3].set_title("Stage 4: Ground Truth Reference Signal")
+    axs[3].set_title("Stage 4: Ground Truth Signal Reference")
     axs[3].legend(loc="upper right")
 
     plt.tight_layout()

@@ -4,8 +4,8 @@ import scipy.signal as signal
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import plotly.graph_objects as go
 import pandas as pd
+import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 st.set_page_config(page_title="Remote PPG Signal De-Noiser", layout="wide")
@@ -13,7 +13,7 @@ st.set_page_config(page_title="Remote PPG Signal De-Noiser", layout="wide")
 st.title("Remote Biosensor Signal De-Noiser")
 st.markdown("**An Edge-AI & Signal Processing Pipeline for Rural Healthcare**")
 
-# --- 1. MODEL DEFINITION (CORRECTED CHANNEL PROGRESSION) ---
+# --- 1. MODEL DEFINITION ---
 class SignalDenoisingUNet1D(nn.Module):
     def __init__(self):
         super(SignalDenoisingUNet1D, self).__init__()
@@ -23,34 +23,23 @@ class SignalDenoisingUNet1D(nn.Module):
         self.dec1 = nn.Sequential(nn.ConvTranspose1d(32, 1, kernel_size=5, stride=2, padding=2, output_padding=1), nn.Sigmoid())
 
     def forward(self, x):
-        e1 = self.enc1(x)       # (B, 16, L/2)
-        e2 = self.enc2(e1)      # (B, 32, L/4)
-        d2 = self.dec2(e2)      # (B, 16, L/2)
-        cat1 = torch.cat((d2, e1), dim=1) # (B, 32, L/2)
-        return self.dec1(cat1)  # (B, 1, L)
+        e1 = self.enc1(x)
+        e2 = self.enc2(e1)
+        d2 = self.dec2(e2)
+        cat1 = torch.cat((d2, e1), dim=1)
+        return self.dec1(cat1)
 
-# --- 2. SIGNAL HELPERS & METRICS ---
-
-# --- CACHED FAST FILE LOADER ---
+# --- 2. FAST CSV PARSER (CACHED) ---
 @st.cache_data
 def load_uploaded_signal(uploaded_file):
-    """
-    Fast CSV parser that ignores text headers, detects numeric PPG data,
-    and caches the result so Streamlit doesn't re-parse on every slider move.
-    """
-    # 1. Read CSV with pandas (handles headers automatically)
+    """Reads CSV instantly, handles text headers automatically, and ignores non-numeric columns."""
     df = pd.read_csv(uploaded_file)
-    
-    # 2. Select only numeric columns
     numeric_df = df.select_dtypes(include=[np.number])
     
     if numeric_df.empty:
-        raise ValueError("No numeric signal columns found in the CSV file.")
+        raise ValueError("No numeric data columns found in the CSV.")
     
-    # 3. If there are multiple numeric columns (e.g., Time & PPG), pick the last one (usually PPG)
-    # or the column named 'ppg' / 'signal' if present
     cols_lower = [str(c).lower() for c in numeric_df.columns]
-    
     if 'ppg' in cols_lower:
         idx = cols_lower.index('ppg')
         raw_signal = numeric_df.iloc[:, idx].values
@@ -58,22 +47,18 @@ def load_uploaded_signal(uploaded_file):
         idx = cols_lower.index('pleth')
         raw_signal = numeric_df.iloc[:, idx].values
     else:
-        # Default to the second column if time is column 0, otherwise column 0
         idx = 1 if numeric_df.shape[1] > 1 else 0
         raw_signal = numeric_df.iloc[:, idx].values
 
-    # Remove any NaN or infinite values
     raw_signal = raw_signal[~np.isnan(raw_signal)]
     return raw_signal.astype(np.float32)
 
 def generate_synthetic_ppg(t, hr_bpm):
-    """Generates a dynamic cardiac wave for given BPM."""
     freq = hr_bpm / 60.0
     ppg = np.sin(2 * np.pi * freq * t) + 0.35 * np.sin(4 * np.pi * freq * t + 0.5)
     return (ppg - np.min(ppg)) / (np.max(ppg) - np.min(ppg) + 1e-8)
 
 def calculate_sqi(sig, fs=50.0):
-    """Calculates Signal Quality Index using spectral energy in cardiac band (0.5 - 4 Hz)."""
     freqs, psd = signal.welch(sig, fs=fs, nperseg=len(sig))
     cardiac_band_power = np.sum(psd[(freqs >= 0.5) & (freqs <= 4.0)])
     total_power = np.sum(psd) + 1e-8
@@ -83,17 +68,13 @@ def calculate_sqi(sig, fs=50.0):
 def clinical_triage_engine(reconstructed, peaks, fs=50.0):
     if len(peaks) < 2:
         return {
-            "status": "CRITICAL / UNREADABLE DATA",
-            "color": "error",
-            "bpm": 0,
-            "sdnn": 0.0,
-            "category": "Artifact",
-            "advice": [" **Insufficient Peak Resolution:** Waveform amplitude is suppressed or distorted."]
+            "status": "CRITICAL / UNREADABLE DATA", "color": "error",
+            "bpm": 0, "sdnn": 0.0, "category": "Artifact",
+            "advice": ["⚠️ **Insufficient Peak Resolution:** Waveform amplitude is suppressed or distorted."]
         }
     
     rr_intervals_sec = np.diff(peaks) / fs
     rr_intervals_ms = rr_intervals_sec * 1000.0
-    
     mean_rr_sec = np.mean(rr_intervals_sec)
     bpm = int(60.0 / mean_rr_sec) if mean_rr_sec > 0 else 0
     sdnn = np.std(rr_intervals_ms)
@@ -101,16 +82,16 @@ def clinical_triage_engine(reconstructed, peaks, fs=50.0):
     advice_notes = []
     if bpm < 50:
         status, color, category = "ALERT — SEVERE BRADYCARDIA", "warning", "Bradycardia"
-        advice_notes.append(f" **Low Heart Rate ({bpm} BPM):** Pulse rate below normal resting threshold.")
+        advice_notes.append(f"📉 **Low Heart Rate ({bpm} BPM):** Pulse rate below normal resting threshold.")
     elif bpm > 110:
         status, color, category = "ALERT — TACHYCARDIA DETECTED", "warning", "Tachycardia"
-        advice_notes.append(f" **Elevated Heart Rate ({bpm} BPM):** Pulse rate exceeds physiological target.")
+        advice_notes.append(f"📈 **Elevated Heart Rate ({bpm} BPM):** Pulse rate exceeds physiological target.")
     elif sdnn > 120.0:
         status, color, category = "ALERT — HIGH RHYTHM VARIABILITY", "warning", "Arrhythmia Risk"
-        advice_notes.append(f" **Irregular Pulse Cadence (SDNN: {sdnn:.1f} ms):** High beat-to-beat timing variance.")
+        advice_notes.append(f"⚡ **Irregular Pulse Cadence (SDNN: {sdnn:.1f} ms):** High beat-to-beat timing variance.")
     else:
         status, color, category = "NOMINAL — STABLE SINUS RHYTHM", "success", "Normal"
-        advice_notes.append(f" **Normal Parameters:** Heart rate ({bpm} BPM) and pulse cadence (SDNN: {sdnn:.1f} ms) are stable.")
+        advice_notes.append(f"✅ **Normal Parameters:** Heart rate ({bpm} BPM) and pulse cadence (SDNN: {sdnn:.1f} ms) are stable.")
 
     return {"status": status, "color": color, "bpm": bpm, "sdnn": sdnn, "category": category, "advice": advice_notes}
 
@@ -125,7 +106,6 @@ def train_model():
     np.random.seed(42)
     torch.manual_seed(42)
     length = 200
-    FS = 50.0
     duration = 4.0
     t = np.linspace(0, duration, length)
     
@@ -158,15 +138,15 @@ def train_model():
 
 model = train_model()
 
-# --- 3. RESTORED SIDEBAR CONFIGURATION & FILE UPLOADER ---
+# --- 3. SIDEBAR CONFIGURATION ---
 st.sidebar.header("Data & Noise Settings")
 
 data_source = st.sidebar.radio("Data Mode", ["Synthetic Generator", "Upload Real PPG Stream"])
 
 if data_source == "Upload Real PPG Stream":
-    uploaded_file = st.sidebar.file_uploader("Upload CSV/TXT Signal", type=["csv", "txt"])
+    uploaded_file = st.sidebar.file_uploader("Upload CSV Stream", type=["csv", "txt"])
     FS = st.sidebar.number_input("Sensor Sampling Rate (Hz)", min_value=1.0, max_value=1000.0, value=50.0, step=1.0)
-    target_hr = 75 # Default fallback
+    target_hr = 75
 else:
     uploaded_file = None
     FS = 50.0
@@ -181,17 +161,14 @@ TARGET_LENGTH = 200
 duration = 4.0
 t = np.linspace(0, duration, TARGET_LENGTH)
 is_custom_file = False
+true_clean = None  # Default None for custom uploaded files
 
 if data_source == "Upload Real PPG Stream" and uploaded_file is not None:
     try:
-        # Load full array
         full_signal = load_uploaded_signal(uploaded_file)
-        
-        # WINDOW SLICING: Slice 4 seconds worth of samples (FS * 4 seconds)
         window_size = int(FS * duration)
         
         if len(full_signal) > window_size:
-            # Let user select start second in sidebar if large file
             max_start_sec = int((len(full_signal) - window_size) / FS)
             start_sec = st.sidebar.slider("Window Start Offset (seconds)", 0, max(1, max_start_sec), 0)
             start_idx = int(start_sec * FS)
@@ -199,26 +176,28 @@ if data_source == "Upload Real PPG Stream" and uploaded_file is not None:
         else:
             raw_data = full_signal
 
-        # Resample chunk to 200 points for UNet
         if len(raw_data) != TARGET_LENGTH:
             raw_data = signal.resample(raw_data, TARGET_LENGTH)
             
-        true_clean = (raw_data - np.min(raw_data)) / (np.max(raw_data) - np.min(raw_data) + 1e-8)
+        raw_noisy = (raw_data - np.min(raw_data)) / (np.max(raw_data) - np.min(raw_data) + 1e-8)
         is_custom_file = True
         st.sidebar.success(f"Custom Stream Loaded! ({len(full_signal):,} total points)")
     except Exception as e:
         st.sidebar.error(f"Error parsing file: {e}. Reverting to Synthetic.")
         true_clean = generate_synthetic_ppg(t, target_hr)
+        high_freq_noise = noise_amp * np.sin(2 * np.pi * hum_freq * t)
+        baseline_drift = drift_level * np.sin(2 * np.pi * 0.2 * t)
+        random_noise = np.random.normal(0, noise_amp * 0.5, TARGET_LENGTH)
+        raw_noisy = true_clean + high_freq_noise + baseline_drift + random_noise
+        raw_noisy = (raw_noisy - np.min(raw_noisy)) / (np.max(raw_noisy) - np.min(raw_noisy) + 1e-8)
 else:
+    # Synthetic Mode generates explicit ground truth reference
     true_clean = generate_synthetic_ppg(t, target_hr)
-
-# Corrupt signal with noise controls
-high_freq_noise = noise_amp * np.sin(2 * np.pi * hum_freq * t)
-baseline_drift = drift_level * np.sin(2 * np.pi * 0.2 * t)
-random_noise = np.random.normal(0, noise_amp * 0.5, TARGET_LENGTH)
-
-raw_noisy = true_clean + high_freq_noise + baseline_drift + random_noise
-raw_noisy = (raw_noisy - np.min(raw_noisy)) / (np.max(raw_noisy) - np.min(raw_noisy) + 1e-8)
+    high_freq_noise = noise_amp * np.sin(2 * np.pi * hum_freq * t)
+    baseline_drift = drift_level * np.sin(2 * np.pi * 0.2 * t)
+    random_noise = np.random.normal(0, noise_amp * 0.5, TARGET_LENGTH)
+    raw_noisy = true_clean + high_freq_noise + baseline_drift + random_noise
+    raw_noisy = (raw_noisy - np.min(raw_noisy)) / (np.max(raw_noisy) - np.min(raw_noisy) + 1e-8)
 
 # Bandpass filtering
 filtered_signal = butter_bandpass_filter(raw_noisy, lowcut=0.5, highcut=4.0, fs=FS)
@@ -230,20 +209,20 @@ with torch.no_grad():
     input_sample = torch.FloatTensor(raw_noisy).unsqueeze(0).unsqueeze(0)
     reconstructed = model(input_sample).squeeze().numpy()
 
-# Peak Detection & Metrics
+# Metrics
 min_distance = max(1, int(FS * 0.35))
 peaks, _ = signal.find_peaks(reconstructed, distance=min_distance, prominence=0.15)
 confidence_score = calculate_sqi(reconstructed, fs=FS)
 
-# --- 5. DASHBOARD TABS ---
+# --- 5. DASHBOARD DISPLAY ---
 tabs = st.tabs(["Single Signal Analysis", "Batch Performance Suite"])
 triage = clinical_triage_engine(reconstructed, peaks, fs=FS)
 
 with tabs[0]:
     if is_custom_file:
-        st.info(" **Source:** Processing Custom Uploaded Signal Stream")
+        st.info("ℹ️ **Source:** Processing Custom Uploaded Signal Stream (Real PPG - No Ground Truth Benchmark Available)")
     else:
-        st.info(" **Source:** Using Built-in Dynamic PPG Generator")
+        st.info("ℹ️ **Source:** Using Built-in Dynamic PPG Generator")
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Signal Quality (SQI)", f"{confidence_score:.1f}%")
@@ -253,7 +232,6 @@ with tabs[0]:
 
     st.markdown("---")
 
-    # Display Triage Banner
     if triage["color"] == "error":
         st.error(f"**Clinical Status:** {triage['status']}")
     elif triage["color"] == "warning":
@@ -261,21 +239,27 @@ with tabs[0]:
     else:
         st.success(f"**Clinical Status:** {triage['status']}")
 
-    # Clinical Guidance Box
     with st.expander("🩺 **Clinical Telemetry Guidance & Biomarkers**", expanded=True):
         st.markdown("##### **Actionable Insights:**")
         for note in triage["advice"]:
             st.markdown(f"- {note}")
 
-    # Interactive Subplots
-    fig = make_subplots(rows=4, cols=1, subplot_titles=(
-        "Stage 1: Raw Telemetry Stream (With Noise)",
-        "Stage 2: Classical Bandpass Filter (0.5 - 4.0 Hz)",
-        f"Stage 3: AI Reconstructed Wave & Peaks (SQI: {confidence_score:.1f}%)",
-        "Stage 4: Ground Truth Reference Signal"
-    ))
+    # DYNAMIC SUBPLOTS: 4 plots if ground truth exists, 3 subplots if uploaded file
+    if true_clean is not None:
+        fig = make_subplots(rows=4, cols=1, subplot_titles=(
+            "Stage 1: Raw Telemetry Stream (With Noise)",
+            "Stage 2: Classical Bandpass Filter (0.5 - 4.0 Hz)",
+            f"Stage 3: AI Reconstructed Wave & Peaks (SQI: {confidence_score:.1f}%)",
+            "Stage 4: Ground Truth Reference Signal"
+        ))
+    else:
+        fig = make_subplots(rows=3, cols=1, subplot_titles=(
+            "Stage 1: Raw Uploaded Sensor Stream",
+            "Stage 2: Classical Bandpass Filter (0.5 - 4.0 Hz)",
+            f"Stage 3: AI Reconstructed Wave & Peaks (SQI: {confidence_score:.1f}%)"
+        ))
 
-    fig.add_trace(go.Scatter(x=t, y=raw_noisy, mode='lines', name='Raw Noisy', line=dict(color='crimson')), row=1, col=1)
+    fig.add_trace(go.Scatter(x=t, y=raw_noisy, mode='lines', name='Raw Signal', line=dict(color='crimson')), row=1, col=1)
     fig.add_trace(go.Scatter(x=t, y=filtered_signal, mode='lines', name='Bandpass Filtered', line=dict(color='darkorange')), row=2, col=1)
     fig.add_trace(go.Scatter(x=t, y=reconstructed, mode='lines', name='AI Reconstructed', line=dict(color='royalblue', width=2)), row=3, col=1)
     
@@ -283,25 +267,26 @@ with tabs[0]:
         fig.add_trace(go.Scatter(x=t[peaks], y=reconstructed[peaks], mode='markers', name='Systolic Peaks',
                                  marker=dict(color='purple', size=8, symbol='diamond')), row=3, col=1)
 
-    fig.add_trace(go.Scatter(x=t, y=true_clean, mode='lines', name='Ground Truth', line=dict(color='forestgreen', dash='dash')), row=4, col=1)
+    # Only graph ground truth if in Synthetic mode
+    if true_clean is not None:
+        fig.add_trace(go.Scatter(x=t, y=true_clean, mode='lines', name='Ground Truth', line=dict(color='forestgreen', dash='dash')), row=4, col=1)
 
-    fig.update_layout(height=800, template="plotly_white", showlegend=False)
+    fig.update_layout(height=800 if true_clean is not None else 650, template="plotly_white", showlegend=False)
     st.plotly_chart(fig, use_container_width=True)
 
-# --- RESTORED BATCH EVALUATION SUITE WITH MEAN CALCULATOR ---
 with tabs[1]:
     st.subheader("Pipeline Performance Across Multiple Iterations")
     st.markdown("Runs **50 automated test iterations** under current noise configurations to evaluate stability.")
     
     if st.button("Run Batch Evaluation"):
-        eval_confidences = []
-        peaks_found = []
-        eval_bpms = []
+        eval_confidences, peaks_found, eval_bpms = [], [], []
+        
+        # Base wave for batch test (use synthetic if true_clean is None)
+        batch_base_wave = true_clean if true_clean is not None else generate_synthetic_ppg(t, 75)
         
         for _ in range(50):
-            # Introduce phase shift / noise variation per iteration
             shift = np.random.randint(-15, 15)
-            sample_clean = np.roll(true_clean, shift)
+            sample_clean = np.roll(batch_base_wave, shift)
             sample_noise = noise_amp * np.sin(2 * np.pi * hum_freq * t) + drift_level * np.sin(2 * np.pi * 0.2 * t) + np.random.normal(0, noise_amp * 0.5, TARGET_LENGTH)
             sample_noisy = (sample_clean + sample_noise)
             sample_noisy = (sample_noisy - np.min(sample_noisy)) / (np.max(sample_noisy) - np.min(sample_noisy) + 1e-8)
@@ -319,20 +304,16 @@ with tabs[1]:
             if len(pks) >= 2:
                 eval_bpms.append(60.0 / np.mean(np.diff(t[pks])))
 
-        # Batch Mean Summary Metrics
         eval_col1, eval_col2, eval_col3 = st.columns(3)
         eval_col1.metric("Mean Quality Score (SQI)", f"{np.mean(eval_confidences):.1f}%")
         eval_col2.metric("Mean Peaks Counted", f"{np.mean(peaks_found):.1f}")
         eval_col3.metric("Mean Estimated BPM", f"{np.mean(eval_bpms):.1f} BPM" if len(eval_bpms) > 0 else "N/A")
         
-        # Plot distribution histogram using Plotly
         hist_fig = go.Figure()
         hist_fig.add_trace(go.Histogram(x=eval_confidences, nbinsx=15, marker_color='royalblue', opacity=0.75))
         hist_fig.update_layout(
             title="Distribution of Signal Quality Scores (SQI % across 50 runs)",
-            xaxis_title="Quality Score (%)",
-            yaxis_title="Sample Count",
-            template="plotly_white",
-            height=350
+            xaxis_title="Quality Score (%)", yaxis_title="Sample Count",
+            template="plotly_white", height=350
         )
         st.plotly_chart(hist_fig, use_container_width=True)

@@ -10,7 +10,6 @@ from ipywidgets import interact, FloatSlider, IntSlider
 np.random.seed(42)
 torch.manual_seed(42)
 
-# --- 1. MODEL DEFINITION (FIXED CHANNEL PROGRESSION) ---
 class SignalDenoisingUNet1D(nn.Module):
     def __init__(self):
         super(SignalDenoisingUNet1D, self).__init__()
@@ -26,7 +25,6 @@ class SignalDenoisingUNet1D(nn.Module):
         cat1 = torch.cat((d2, e1), dim=1)
         return self.dec1(cat1)
 
-# --- 2. SIGNAL GENERATOR & SQI HELPERS ---
 def generate_synthetic_ppg(t, hr_bpm):
     freq = hr_bpm / 60.0
     ppg = np.sin(2 * np.pi * freq * t) + 0.35 * np.sin(4 * np.pi * freq * t + 0.5)
@@ -45,13 +43,12 @@ def butter_bandpass_filter(data, lowcut=0.5, highcut=4.0, fs=50.0, order=2):
     b, a = signal.butter(order, [low, high], btype='band')
     return signal.filtfilt(b, a, data)
 
-# --- 3. TRAIN BASE MODEL ---
-print("Training base model for notebook dashboard...")
 FS = 50.0
 length = 200
 duration = 4.0
 t = np.linspace(0, duration, length)
 
+# Pre-train base model
 clean_dataset, noisy_dataset = [], []
 for _ in range(500):
     rand_hr = np.random.randint(50, 130)
@@ -68,20 +65,16 @@ model = SignalDenoisingUNet1D()
 criterion = nn.MSELoss()
 optimizer = optim.Adam(model.parameters(), lr=0.005)
 
-epochs = 40
-batch_size = 32
-for epoch in range(epochs):
+for epoch in range(40):
     permutation = torch.randperm(noisy_tensor.size(0))
-    for i in range(0, noisy_tensor.size(0), batch_size):
-        indices = permutation[i:i+batch_size]
+    for i in range(0, noisy_tensor.size(0), 32):
+        indices = permutation[i:i+32]
         optimizer.zero_grad()
         outputs = model(noisy_tensor[indices])
         loss = criterion(outputs, clean_tensor[indices])
         loss.backward()
         optimizer.step()
-print("Model Ready!\n")
 
-# --- 4. INTERACTIVE PIPELINE FUNCTION ---
 def run_interactive_pipeline(target_hr, noise_level, hum_freq, drift_level):
     true_clean = generate_synthetic_ppg(t, target_hr)
     
@@ -101,13 +94,11 @@ def run_interactive_pipeline(target_hr, noise_level, hum_freq, drift_level):
         reconstructed = model(input_sample).squeeze().numpy()
         
     sqi_score = calculate_sqi(reconstructed, fs=FS)
-    
     min_distance = max(1, int(FS * 0.35))
     peaks, _ = signal.find_peaks(reconstructed, distance=min_distance, prominence=0.15)
     
     if len(peaks) >= 2:
-        rr_intervals = np.diff(t[peaks])
-        est_bpm = 60.0 / np.mean(rr_intervals)
+        est_bpm = 60.0 / np.mean(np.diff(t[peaks]))
         bpm_str = f"{est_bpm:.1f} BPM"
     else:
         bpm_str = "N/A"
@@ -115,7 +106,6 @@ def run_interactive_pipeline(target_hr, noise_level, hum_freq, drift_level):
     print(f"SQI Score: {sqi_score:.1f}% | Est. Heart Rate: {bpm_str} | Peaks Counted: {len(peaks)}")
     
     plt.figure(figsize=(12, 9))
-    
     plt.subplot(4, 1, 1)
     plt.plot(raw_noisy, color='crimson', label='Raw Sensor Stream')
     plt.title(f'Raw Input Signal (Grid Hum: {hum_freq}Hz | Drift: {drift_level:.2f})')
@@ -141,7 +131,6 @@ def run_interactive_pipeline(target_hr, noise_level, hum_freq, drift_level):
     plt.tight_layout()
     plt.show()
 
-print("--- PPG SIGNAL DASHBOARD ---")
 interact(
     run_interactive_pipeline,
     target_hr=IntSlider(min=50, max=140, step=1, value=75, description='Simulated BPM'),

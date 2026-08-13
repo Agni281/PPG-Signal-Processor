@@ -6,11 +6,50 @@ import torch.nn as nn
 import plotly.graph_objects as go
 import pandas as pd
 import os
+from abc import ABC
 
 st.set_page_config(page_title="Remote PPG Signal De-Noiser", layout="wide")
 
 # ==========================================
-# 1. 1D U-NET MODEL ARCHITECTURE
+# 1. NOISE GENERATOR CLASS (RESTORED)
+# ==========================================
+class random_noise(ABC):
+    """Utility for creating realistic synthetic PPG noise for benchmarking and demos."""
+
+    def __init__(self, amplitude=0.3, hum_freq=50.0, drift_level=0.2, fs=50.0, rng=None):
+        self.amplitude = float(amplitude)
+        self.hum_freq = float(hum_freq)
+        self.drift_level = float(drift_level)
+        self.fs = float(fs)
+        self.rng = np.random.default_rng() if rng is None else rng
+
+    def _normalize(self, signal_values):
+        signal_values = np.asarray(signal_values, dtype=np.float64)
+        vmin = np.min(signal_values)
+        vmax = np.max(signal_values)
+        denom = vmax - vmin + 1e-8
+        return (signal_values - vmin) / denom
+
+    def add_hum(self, time_axis, amplitude=None):
+        amp = self.amplitude if amplitude is None else float(amplitude)
+        hum = amp * np.sin(2 * np.pi * self.hum_freq * time_axis)
+        return hum
+
+    def add_drift(self, time_axis, amplitude=None):
+        amp = self.drift_level if amplitude is None else float(amplitude)
+        drift = amp * np.sin(2 * np.pi * 0.2 * time_axis)
+        return drift
+
+    def generate_noisy_signal(self, clean_signal, time_axis):
+        hum = self.add_hum(time_axis)
+        drift = self.add_drift(time_axis)
+        gaussian = self.rng.normal(0, self.amplitude * 0.5, len(time_axis))
+        noisy = clean_signal + hum + drift + gaussian
+        return self._normalize(noisy)
+
+
+# ==========================================
+# 2. 1D U-NET MODEL ARCHITECTURE
 # ==========================================
 class SignalDenoisingUNet1D(nn.Module):
     def __init__(self):
@@ -41,7 +80,7 @@ def load_trained_model(weights_path='unet_realdata_weights.pth'):
 
 
 # ==========================================
-# 2. HELPER & PARSING FUNCTIONS
+# 3. HELPER FUNCTIONS
 # ==========================================
 @st.cache_data
 def load_uploaded_signal(uploaded_file):
@@ -87,7 +126,7 @@ def calculate_sqi(sig, fs=50.0):
 
 
 # ==========================================
-# 3. SIDEBAR CONFIGURATION
+# 4. SIDEBAR CONFIGURATION
 # ==========================================
 st.sidebar.title("PPG Telemetry Control")
 data_source = st.sidebar.radio("Data Mode", ["Synthetic Generator", "Upload Real PPG Stream"])
@@ -96,7 +135,7 @@ if data_source == "Upload Real PPG Stream":
     uploaded_file = st.sidebar.file_uploader("Upload CSV Stream", type=["csv", "txt"])
     FS_NATIVE = st.sidebar.number_input("Sensor Sampling Rate (Hz)", min_value=1.0, max_value=1000.0, value=500.0, step=10.0)
     target_hr = 75
-    noise_amp, hum_freq, drift_level = 0.0, 50, 0.0
+    noise_amp, hum_freq, drift_level = 0.0, 50.0, 0.0
 else:
     uploaded_file = None
     FS_NATIVE = 50.0
@@ -108,7 +147,7 @@ else:
 
 
 # ==========================================
-# 4. DATA PROCESSING PIPELINE
+# 5. DATA PROCESSING PIPELINE
 # ==========================================
 TARGET_LENGTH = 200
 MODEL_FS = 50.0
@@ -129,7 +168,6 @@ if data_source == "Upload Real PPG Stream" and uploaded_file is not None:
         else:
             raw_data = full_signal
 
-        # Resample native sampling rate (e.g. 500Hz) down to 50Hz (200 points)
         num_target_samples = int(len(raw_data) * (MODEL_FS / FS_NATIVE))
         resampled = signal.resample(raw_data, num_target_samples)
         
@@ -141,18 +179,16 @@ if data_source == "Upload Real PPG Stream" and uploaded_file is not None:
     except Exception as e:
         st.sidebar.error(f"Error parsing file: {e}. Reverting to Synthetic.")
         true_clean = generate_synthetic_ppg(t, target_hr)
-        raw_noisy = true_clean
+        noise_gen = random_noise(amplitude=0.3, hum_freq=50, drift_level=0.2, fs=MODEL_FS)
+        raw_noisy = noise_gen.generate_noisy_signal(true_clean, t)
 else:
     true_clean = generate_synthetic_ppg(t, target_hr)
-    high_freq = noise_amp * np.sin(2 * np.pi * hum_freq * t)
-    drift = drift_level * np.sin(2 * np.pi * 0.2 * t)
-    random_noise = np.random.normal(0, noise_amp * 0.5, TARGET_LENGTH)
-    raw_noisy = true_clean + high_freq + drift + random_noise
-    raw_noisy = (raw_noisy - np.min(raw_noisy)) / (np.max(raw_noisy) - np.min(raw_noisy) + 1e-8)
+    noise_gen = random_noise(amplitude=noise_amp, hum_freq=hum_freq, drift_level=drift_level, fs=MODEL_FS)
+    raw_noisy = noise_gen.generate_noisy_signal(true_clean, t)
 
 
 # ==========================================
-# 5. MODEL INFERENCE & METRICS
+# 6. MODEL INFERENCE & METRICS
 # ==========================================
 model = load_trained_model()
 
@@ -177,7 +213,7 @@ else:
 
 
 # ==========================================
-# 6. STREAMLIT DISPLAY DASHBOARD
+# 7. DASHBOARD DISPLAY
 # ==========================================
 st.title("🫀 Remote PPG Signal Processing Engine")
 st.markdown("1D Convolutional U-Net Denoising for Optical Telemetry Streams")

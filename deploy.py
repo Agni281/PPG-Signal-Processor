@@ -34,35 +34,25 @@ class SignalDenoisingUNet1D(nn.Module):
 # --- CACHED FAST FILE LOADER ---
 @st.cache_data
 def load_uploaded_signal(uploaded_file):
-    """
-    Fast CSV parser that ignores text headers, detects numeric PPG data,
-    and caches the result so Streamlit doesn't re-parse on every slider move.
-    """
-    # 1. Read CSV with pandas (handles headers automatically)
     df = pd.read_csv(uploaded_file)
-    
-    # 2. Select only numeric columns
     numeric_df = df.select_dtypes(include=[np.number])
     
     if numeric_df.empty:
-        raise ValueError("No numeric signal columns found in the CSV file.")
+        raise ValueError("No numeric data columns found in the CSV.")
     
-    # 3. If there are multiple numeric columns (e.g., Time & PPG), pick the last one (usually PPG)
-    # or the column named 'ppg' / 'signal' if present
     cols_lower = [str(c).lower() for c in numeric_df.columns]
     
-    if 'ppg' in cols_lower:
-        idx = cols_lower.index('ppg')
-        raw_signal = numeric_df.iloc[:, idx].values
-    elif 'pleth' in cols_lower:
-        idx = cols_lower.index('pleth')
-        raw_signal = numeric_df.iloc[:, idx].values
+    # Priority check for pleth_1 / pleth / ppg columns
+    if 'pleth_1' in cols_lower:
+        idx = cols_lower.index('pleth_1')
+    elif any('pleth' in c for c in cols_lower):
+        idx = [i for i, c in enumerate(cols_lower) if 'pleth' in c][0]
+    elif any('ppg' in c for c in cols_lower):
+        idx = [i for i, c in enumerate(cols_lower) if 'ppg' in c][0]
     else:
-        # Default to the second column if time is column 0, otherwise column 0
         idx = 1 if numeric_df.shape[1] > 1 else 0
-        raw_signal = numeric_df.iloc[:, idx].values
 
-    # Remove any NaN or infinite values
+    raw_signal = numeric_df.iloc[:, idx].values
     raw_signal = raw_signal[~np.isnan(raw_signal)]
     return raw_signal.astype(np.float32)
 
@@ -165,8 +155,8 @@ data_source = st.sidebar.radio("Data Mode", ["Synthetic Generator", "Upload Real
 
 if data_source == "Upload Real PPG Stream":
     uploaded_file = st.sidebar.file_uploader("Upload CSV/TXT Signal", type=["csv", "txt"])
-    FS = st.sidebar.number_input("Sensor Sampling Rate (Hz)", min_value=1.0, max_value=1000.0, value=50.0, step=1.0)
-    target_hr = 75 # Default fallback
+    FS = st.sidebar.number_input("Sensor Sampling Rate (Hz)", min_value=1.0, max_value=1000.0, value=500.0, step=10.0)
+    target_hr = 500 # Default fallback
 else:
     uploaded_file = None
     FS = 50.0

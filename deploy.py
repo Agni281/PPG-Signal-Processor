@@ -154,7 +154,7 @@ def rule_based_triage(bpm, sqi_score):
         return {
             "status": "ELEVATED / TACHYCARDIA",
             "color": "orange",
-            "msg": f"Elevated resting heart rate ({bpm_val:.1f} BPM). May indicate stress, exertion, or mild tachycardia."
+            "msg": f"Elevated resting heart rate ({bpm_val:.1f} BPM). May indicate stress, exertion, motion, or mild tachycardia."
         }
     else:  # > 130 BPM
         return {

@@ -124,6 +124,45 @@ def calculate_snr(clean_sig, noisy_sig):
     p_noise = np.sum(noise ** 2) + 1e-8
     return 10 * np.log10(p_signal / p_noise)
 
+def rule_based_triage(bpm, sqi_score):
+    """
+    Evaluates physiological parameters using standard adult vital sign ranges (NEWS/AHA standards).
+    Requires a minimum SQI threshold for clinical confidence.
+    """
+    if sqi_score < 50.0 or bpm == "N/A":
+        return {
+            "status": "UNRELIABLE / POOR SIGNAL",
+            "color": "orange",
+            "msg": "Signal Quality Index (SQI) is too low for automated triage assessment. Reduce motion and re-acquire data."
+        }
+    
+    bpm_val = float(bpm.replace(" BPM", ""))
+    
+    if bpm_val < 50.0:
+        return {
+            "status": "BRADYCARDIA ALERT",
+            "color": "red",
+            "msg": f"Abnormally low resting heart rate ({bpm_val:.1f} BPM). Potential bradycardia detected."
+        }
+    elif 50.0 <= bpm_val <= 100.0:
+        return {
+            "status": "NORMAL RESTING VITALS",
+            "color": "green",
+            "msg": f"Heart rate ({bpm_val:.1f} BPM) falls within standard physiological boundaries."
+        }
+    elif 100.0 < bpm_val <= 130.0:
+        return {
+            "status": "ELEVATED / TACHYCARDIA",
+            "color": "orange",
+            "msg": f"Elevated resting heart rate ({bpm_val:.1f} BPM). May indicate stress, exertion, or mild tachycardia."
+        }
+    else:  # > 130 BPM
+        return {
+            "status": "SEVERE TACHYCARDIA ALERT",
+            "color": "red",
+            "msg": f"Critical heart rate elevation ({bpm_val:.1f} BPM). Exceeds typical resting thresholds."
+        }
+
 def butter_bandpass_filter(data, lowcut=0.5, highcut=4.0, fs=50.0, order=2):
     nyq = 0.5 * fs
     low, high = lowcut / nyq, highcut / nyq
@@ -244,6 +283,18 @@ col1.metric("Signal Quality (SQI)", f"{sqi_score:.1f}%")
 col2.metric("SNR Gain", snr_str)
 col3.metric("Estimated Heart Rate", bpm_str)
 col4.metric("Detected Peaks", len(peaks))
+
+st.write("---")
+triage = rule_based_triage(bpm_str, sqi_score)
+
+if triage["color"] == "green":
+    st.success(f"**Triage Assessment:** {triage['status']}\n\n{triage['msg']}")
+elif triage["color"] == "orange":
+    st.warning(f"**Triage Assessment:** {triage['status']}\n\n{triage['msg']}")
+else:
+    st.error(f"**Triage Assessment:** {triage['status']}\n\n{triage['msg']}")
+
+st.caption("*Automated rule-based assessment for research/demonstration purposes only. Not intended for primary clinical diagnosis.*")
 
 # 4 Stacked Subplots
 fig = make_subplots(

@@ -4,6 +4,7 @@ import scipy.signal as signal
 import torch
 import torch.nn as nn
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import pandas as pd
 import os
 from abc import ABC
@@ -11,7 +12,7 @@ from abc import ABC
 st.set_page_config(page_title="Remote PPG Signal De-Noiser", layout="wide")
 
 # ==========================================
-# 1. NOISE GENERATOR CLASS (RESTORED)
+# 1. NOISE GENERATOR CLASS
 # ==========================================
 class random_noise(ABC):
     """Utility for creating realistic synthetic PPG noise for benchmarking and demos."""
@@ -213,7 +214,7 @@ else:
 
 
 # ==========================================
-# 7. DASHBOARD DISPLAY
+# 7. DASHBOARD DISPLAY (RESTORED 4 SUBPLOTS)
 # ==========================================
 st.title("🫀 Remote PPG Signal Processing Engine")
 st.markdown("1D Convolutional U-Net Denoising for Optical Telemetry Streams")
@@ -223,17 +224,37 @@ col1.metric("Signal Quality (SQI)", f"{sqi_score:.1f}%")
 col2.metric("Estimated Heart Rate", bpm_str)
 col3.metric("Detected Systolic Peaks", len(peaks))
 
-# Plotly Visualizations
-fig = go.Figure()
-fig.add_trace(go.Scatter(x=t, y=raw_noisy, mode='lines', name='Stage 1: Raw Input', line=dict(color='crimson')))
-fig.add_trace(go.Scatter(x=t, y=filtered, mode='lines', name='Stage 2: Bandpass Filtered', line=dict(color='orange')))
-fig.add_trace(go.Scatter(x=t, y=reconstructed, mode='lines', name='Stage 3: 1D U-Net Output', line=dict(color='royalblue', width=3)))
+# 4 Stacked Subplots
+fig = make_subplots(
+    rows=4, cols=1, 
+    shared_xaxes=True,
+    subplot_titles=(
+        "Stage 1: Raw Input Window", 
+        "Stage 2: SciPy Bandpass Filter (0.5 - 4.0 Hz)", 
+        "Stage 3: 1D U-Net Reconstructed Output", 
+        "Ground Truth Target"
+    ),
+    vertical_spacing=0.08
+)
 
+# Plot 1: Raw
+fig.add_trace(go.Scatter(x=t, y=raw_noisy, mode='lines', name='Raw Input', line=dict(color='crimson')), row=1, col=1)
+
+# Plot 2: Bandpass Filtered
+fig.add_trace(go.Scatter(x=t, y=filtered, mode='lines', name='Bandpass Filtered', line=dict(color='orange')), row=2, col=1)
+
+# Plot 3: AI Reconstructed + Peaks
+fig.add_trace(go.Scatter(x=t, y=reconstructed, mode='lines', name='1D U-Net Output', line=dict(color='royalblue', width=2)), row=3, col=1)
 if len(peaks) > 0:
-    fig.add_trace(go.Scatter(x=t[peaks], y=reconstructed[peaks], mode='markers', name='Systolic Peaks', marker=dict(color='purple', size=10)))
+    fig.add_trace(go.Scatter(x=t[peaks], y=reconstructed[peaks], mode='markers', name='Systolic Peaks', marker=dict(color='purple', size=10)), row=3, col=1)
 
+# Plot 4: Ground Truth Reference
 if true_clean is not None:
-    fig.add_trace(go.Scatter(x=t, y=true_clean, mode='lines', name='Ground Truth Reference', line=dict(color='green', dash='dash')))
+    fig.add_trace(go.Scatter(x=t, y=true_clean, mode='lines', name='Ground Truth Reference', line=dict(color='green')), row=4, col=1)
+else:
+    fig.add_trace(go.Scatter(x=t, y=np.zeros_like(t), mode='lines', name='No Reference (Real Stream)', line=dict(color='gray', dash='dash')), row=4, col=1)
 
-fig.update_layout(title="PPG Telemetry Pipeline Stages", xaxis_title="Time (seconds)", yaxis_title="Normalized Amplitude", height=500)
+fig.update_layout(height=850, showlegend=True)
+fig.update_xaxes(title_text="Time (seconds)", row=4, col=1)
+
 st.plotly_chart(fig, use_container_width=True)

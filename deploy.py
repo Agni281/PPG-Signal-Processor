@@ -51,7 +51,7 @@ def clinical_triage_engine(reconstructed, peaks, fs=50.0):
             "bpm": 0,
             "sdnn": 0.0,
             "category": "Artifact",
-            "advice": ["⚠️ **Insufficient Peak Resolution:** Waveform amplitude is suppressed or distorted."]
+            "advice": [" **Insufficient Peak Resolution:** Waveform amplitude is suppressed or distorted."]
         }
     
     rr_intervals_sec = np.diff(peaks) / fs
@@ -64,16 +64,16 @@ def clinical_triage_engine(reconstructed, peaks, fs=50.0):
     advice_notes = []
     if bpm < 50:
         status, color, category = "ALERT — SEVERE BRADYCARDIA", "warning", "Bradycardia"
-        advice_notes.append(f"📉 **Low Heart Rate ({bpm} BPM):** Pulse rate below normal resting threshold.")
+        advice_notes.append(f" **Low Heart Rate ({bpm} BPM):** Pulse rate below normal resting threshold.")
     elif bpm > 110:
         status, color, category = "ALERT — TACHYCARDIA DETECTED", "warning", "Tachycardia"
-        advice_notes.append(f"📈 **Elevated Heart Rate ({bpm} BPM):** Pulse rate exceeds physiological target.")
+        advice_notes.append(f" **Elevated Heart Rate ({bpm} BPM):** Pulse rate exceeds physiological target.")
     elif sdnn > 120.0:
         status, color, category = "ALERT — HIGH RHYTHM VARIABILITY", "warning", "Arrhythmia Risk"
-        advice_notes.append(f"⚡ **Irregular Pulse Cadence (SDNN: {sdnn:.1f} ms):** High beat-to-beat timing variance.")
+        advice_notes.append(f" **Irregular Pulse Cadence (SDNN: {sdnn:.1f} ms):** High beat-to-beat timing variance.")
     else:
         status, color, category = "NOMINAL — STABLE SINUS RHYTHM", "success", "Normal"
-        advice_notes.append(f"✅ **Normal Parameters:** Heart rate ({bpm} BPM) and pulse cadence (SDNN: {sdnn:.1f} ms) are stable.")
+        advice_notes.append(f" **Normal Parameters:** Heart rate ({bpm} BPM) and pulse cadence (SDNN: {sdnn:.1f} ms) are stable.")
 
     return {"status": status, "color": color, "bpm": bpm, "sdnn": sdnn, "category": category, "advice": advice_notes}
 
@@ -193,9 +193,9 @@ triage = clinical_triage_engine(reconstructed, peaks, fs=FS)
 
 with tabs[0]:
     if is_custom_file:
-        st.info("ℹ️ **Source:** Processing Custom Uploaded Signal Stream")
+        st.info(" **Source:** Processing Custom Uploaded Signal Stream")
     else:
-        st.info("ℹ️ **Source:** Using Built-in Dynamic PPG Generator")
+        st.info(" **Source:** Using Built-in Dynamic PPG Generator")
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Signal Quality (SQI)", f"{confidence_score:.1f}%")

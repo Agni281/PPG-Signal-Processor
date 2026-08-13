@@ -184,18 +184,24 @@ is_custom_file = False
 
 if data_source == "Upload Real PPG Stream" and uploaded_file is not None:
     try:
-        # Load full array from file
+        # Load full array
         full_signal = load_uploaded_signal(uploaded_file)
         
-        # Take a slice matching target window length or resample
-        if len(full_signal) > TARGET_LENGTH:
-            # Slices the first 4-second chunk (fast)
-            window_size = int(FS * duration)
-            raw_data = full_signal[:window_size]
-            if len(raw_data) != TARGET_LENGTH:
-                raw_data = signal.resample(raw_data, TARGET_LENGTH)
+        # WINDOW SLICING: Slice 4 seconds worth of samples (FS * 4 seconds)
+        window_size = int(FS * duration)
+        
+        if len(full_signal) > window_size:
+            # Let user select start second in sidebar if large file
+            max_start_sec = int((len(full_signal) - window_size) / FS)
+            start_sec = st.sidebar.slider("Window Start Offset (seconds)", 0, max(1, max_start_sec), 0)
+            start_idx = int(start_sec * FS)
+            raw_data = full_signal[start_idx : start_idx + window_size]
         else:
-            raw_data = signal.resample(full_signal, TARGET_LENGTH)
+            raw_data = full_signal
+
+        # Resample chunk to 200 points for UNet
+        if len(raw_data) != TARGET_LENGTH:
+            raw_data = signal.resample(raw_data, TARGET_LENGTH)
             
         true_clean = (raw_data - np.min(raw_data)) / (np.max(raw_data) - np.min(raw_data) + 1e-8)
         is_custom_file = True

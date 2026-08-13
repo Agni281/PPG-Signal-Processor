@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import plotly.graph_objects as go
+import pandas as pd
 from plotly.subplots import make_subplots
 
 st.set_page_config(page_title="Remote PPG Signal De-Noiser", layout="wide")
@@ -29,6 +30,42 @@ class SignalDenoisingUNet1D(nn.Module):
         return self.dec1(cat1)  # (B, 1, L)
 
 # --- 2. SIGNAL HELPERS & METRICS ---
+
+# --- CACHED FAST FILE LOADER ---
+@st.cache_data
+def load_uploaded_signal(uploaded_file):
+    """
+    Fast CSV parser that ignores text headers, detects numeric PPG data,
+    and caches the result so Streamlit doesn't re-parse on every slider move.
+    """
+    # 1. Read CSV with pandas (handles headers automatically)
+    df = pd.read_csv(uploaded_file)
+    
+    # 2. Select only numeric columns
+    numeric_df = df.select_dtypes(include=[np.number])
+    
+    if numeric_df.empty:
+        raise ValueError("No numeric signal columns found in the CSV file.")
+    
+    # 3. If there are multiple numeric columns (e.g., Time & PPG), pick the last one (usually PPG)
+    # or the column named 'ppg' / 'signal' if present
+    cols_lower = [str(c).lower() for c in numeric_df.columns]
+    
+    if 'ppg' in cols_lower:
+        idx = cols_lower.index('ppg')
+        raw_signal = numeric_df.iloc[:, idx].values
+    elif 'pleth' in cols_lower:
+        idx = cols_lower.index('pleth')
+        raw_signal = numeric_df.iloc[:, idx].values
+    else:
+        # Default to the second column if time is column 0, otherwise column 0
+        idx = 1 if numeric_df.shape[1] > 1 else 0
+        raw_signal = numeric_df.iloc[:, idx].values
+
+    # Remove any NaN or infinite values
+    raw_signal = raw_signal[~np.isnan(raw_signal)]
+    return raw_signal.astype(np.float32)
+
 def generate_synthetic_ppg(t, hr_bpm):
     """Generates a dynamic cardiac wave for given BPM."""
     freq = hr_bpm / 60.0
@@ -147,17 +184,22 @@ is_custom_file = False
 
 if data_source == "Upload Real PPG Stream" and uploaded_file is not None:
     try:
-        raw_data = np.loadtxt(uploaded_file, delimiter=',')
-        if raw_data.ndim > 1:
-            raw_data = raw_data[:, 0]
+        # Load full array from file
+        full_signal = load_uploaded_signal(uploaded_file)
         
-        # Resample any uploaded file length to 200 points for U-Net compatibility
-        if len(raw_data) != TARGET_LENGTH:
-            raw_data = signal.resample(raw_data, TARGET_LENGTH)
+        # Take a slice matching target window length or resample
+        if len(full_signal) > TARGET_LENGTH:
+            # Slices the first 4-second chunk (fast)
+            window_size = int(FS * duration)
+            raw_data = full_signal[:window_size]
+            if len(raw_data) != TARGET_LENGTH:
+                raw_data = signal.resample(raw_data, TARGET_LENGTH)
+        else:
+            raw_data = signal.resample(full_signal, TARGET_LENGTH)
             
         true_clean = (raw_data - np.min(raw_data)) / (np.max(raw_data) - np.min(raw_data) + 1e-8)
         is_custom_file = True
-        st.sidebar.success("Custom PPG Stream Processed!")
+        st.sidebar.success(f"Custom Stream Loaded! ({len(full_signal):,} total points)")
     except Exception as e:
         st.sidebar.error(f"Error parsing file: {e}. Reverting to Synthetic.")
         true_clean = generate_synthetic_ppg(t, target_hr)

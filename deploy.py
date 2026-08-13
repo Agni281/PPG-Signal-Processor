@@ -6,7 +6,66 @@ import torch.nn as nn
 import torch.optim as optim
 import plotly.graph_objects as go
 import pandas as pd
+from abc import ABC
 from plotly.subplots import make_subplots
+
+st.set_page_config(page_title="Remote PPG Signal De-Noiser", layout="wide")
+
+class random_noise(ABC):
+    """Utility for creating realistic synthetic PPG noise for benchmarking and demos."""
+
+    def __init__(self, amplitude=0.3, hum_freq=50.0, drift_level=0.2, fs=50.0, rng=None):
+        self.amplitude = float(amplitude)
+        self.hum_freq = float(hum_freq)
+        self.drift_level = float(drift_level)
+        self.fs = float(fs)
+        self.rng = np.random.default_rng() if rng is None else rng
+
+    def _normalize(self, signal_values):
+        signal_values = np.asarray(signal_values, dtype=np.float64)
+        vmin = np.min(signal_values)
+        vmax = np.max(signal_values)
+        denom = vmax - vmin + 1e-8
+        return (signal_values - vmin) / denom
+
+    def add_hum(self, time_axis, amplitude=None):
+        amp = self.amplitude if amplitude is None else float(amplitude)
+        hum = amp * np.sin(2 * np.pi * self.hum_freq * time_axis)
+        return hum
+
+    def add_drift(self, time_axis, amplitude=None):
+        amp = self.drift_level if amplitude is None else float(amplitude)
+        baseline = amp * np.sin(2 * np.pi * 0.2 * time_axis)
+        return baseline
+
+    def add_white_noise(self, length, amplitude=None):
+        amp = self.amplitude if amplitude is None else float(amplitude)
+        return self.rng.normal(0.0, amp * 0.5, size=length)
+
+    def generate(self, clean_signal, time_axis=None, include_hum=True, include_drift=True, include_white=True):
+        clean_signal = np.asarray(clean_signal, dtype=np.float64)
+        if time_axis is None:
+            time_axis = np.linspace(0.0, len(clean_signal) / max(self.fs, 1.0), len(clean_signal), endpoint=False)
+
+        noise = np.zeros_like(clean_signal, dtype=np.float64)
+        if include_hum:
+            noise += self.add_hum(time_axis)
+        if include_drift:
+            noise += self.add_drift(time_axis)
+        if include_white:
+            noise += self.add_white_noise(len(clean_signal))
+
+        noisy = clean_signal + noise
+        return self._normalize(noisy)
+
+    def __call__(self, clean_signal, time_axis=None, **kwargs):
+        return self.generate(clean_signal, time_axis=time_axis, **kwargs)
+
+    def __repr__(self):
+        return (
+            f"random_noise(amplitude={self.amplitude:.3f}, hum_freq={self.hum_freq:.1f}Hz, "
+            f"drift_level={self.drift_level:.3f}, fs={self.fs:.1f})"
+        )
 
 st.set_page_config(page_title="Remote PPG Signal De-Noiser", layout="wide")
 
@@ -216,13 +275,14 @@ else:
     raw_noisy = true_clean + high_freq_noise + baseline_drift + random_noise
     raw_noisy = (raw_noisy - np.min(raw_noisy)) / (np.max(raw_noisy) - np.min(raw_noisy) + 1e-8)
 
-# Corrupt signal with noise controls
-high_freq_noise = noise_amp * np.sin(2 * np.pi * hum_freq * t)
-baseline_drift = drift_level * np.sin(2 * np.pi * 0.2 * t)
-random_noise = np.random.normal(0, noise_amp * 0.5, TARGET_LENGTH)
+# Synthetic corruption is only applied in synthetic mode; uploaded streams stay as-is.
+if not is_custom_file and true_clean is not None:
+    high_freq_noise = noise_amp * np.sin(2 * np.pi * hum_freq * t)
+    baseline_drift = drift_level * np.sin(2 * np.pi * 0.2 * t)
+    random_noise = np.random.normal(0, noise_amp * 0.5, TARGET_LENGTH)
 
-raw_noisy = true_clean + high_freq_noise + baseline_drift + random_noise
-raw_noisy = (raw_noisy - np.min(raw_noisy)) / (np.max(raw_noisy) - np.min(raw_noisy) + 1e-8)
+    raw_noisy = true_clean + high_freq_noise + baseline_drift + random_noise
+    raw_noisy = (raw_noisy - np.min(raw_noisy)) / (np.max(raw_noisy) - np.min(raw_noisy) + 1e-8)
 
 # Bandpass filtering
 filtered_signal = butter_bandpass_filter(raw_noisy, lowcut=0.5, highcut=4.0, fs=FS)

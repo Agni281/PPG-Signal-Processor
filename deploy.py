@@ -11,11 +11,8 @@ from abc import ABC
 
 st.set_page_config(page_title="Remote PPG Signal De-Noiser", layout="wide")
 
-# ==========================================
 # 1. NOISE GENERATOR CLASS
-# ==========================================
 class random_noise(ABC):
-    """Utility for creating realistic synthetic PPG noise for benchmarking and demos."""
 
     def __init__(self, amplitude=0.3, hum_freq=50.0, drift_level=0.2, fs=50.0, rng=None):
         self.amplitude = float(amplitude)
@@ -49,9 +46,7 @@ class random_noise(ABC):
         return self._normalize(noisy)
 
 
-# ==========================================
 # 2. 1D U-NET MODEL ARCHITECTURE
-# ==========================================
 class SignalDenoisingUNet1D(nn.Module):
     def __init__(self):
         super(SignalDenoisingUNet1D, self).__init__()
@@ -81,9 +76,7 @@ def load_trained_model():
     return model
 
 
-# ==========================================
 # 3. HELPER FUNCTIONS
-# ==========================================
 @st.cache_data
 def load_uploaded_signal(uploaded_file):
     df = pd.read_csv(uploaded_file)
@@ -120,10 +113,7 @@ def calculate_snr(clean_sig, noisy_sig):
     return 10 * np.log10(p_signal / p_noise)
 
 def rule_based_triage(bpm, sqi_score):
-    """
-    Evaluates physiological parameters using standard adult vital sign ranges (NEWS/AHA standards).
-    Requires a minimum SQI threshold for clinical confidence.
-    """
+
     if sqi_score < 50.0 or bpm == "N/A":
         return {
             "status": "UNRELIABLE / POOR SIGNAL",
@@ -172,9 +162,7 @@ def calculate_sqi(sig, fs=50.0):
     return np.clip(sqi, 0.0, 100.0)
 
 
-# ==========================================
 # 4. SIDEBAR CONFIGURATION
-# ==========================================
 st.sidebar.title("PPG Telemetry Control")
 data_source = st.sidebar.radio("Data Mode", ["Synthetic Generator", "Upload Real PPG Stream"])
 
@@ -193,9 +181,8 @@ else:
     drift_level = st.sidebar.slider("Baseline Drift", 0.0, 0.5, 0.2, 0.05)
 
 
-# ==========================================
+
 # 5. DATA PROCESSING PIPELINE
-# ==========================================
 TARGET_LENGTH = 200
 MODEL_FS = 50.0
 duration = 4.0
@@ -234,9 +221,8 @@ else:
     raw_noisy = noise_gen.generate_noisy_signal(true_clean, t)
 
 
-# ==========================================
+
 # 6. MODEL INFERENCE & METRICS
-# ==========================================
 model = load_trained_model()
 
 filtered = butter_bandpass_filter(raw_noisy, lowcut=0.5, highcut=4.0, fs=MODEL_FS)
@@ -261,9 +247,7 @@ else:
     bpm_str = "N/A"
 
 
-# ==========================================
 # 7. DASHBOARD DISPLAY (RESTORED 4 SUBPLOTS)
-# ==========================================
 st.title("Remote PPG Signal Processing Engine")
 st.markdown("1D Convolutional U-Net Denoising for Optical Telemetry Streams")
 

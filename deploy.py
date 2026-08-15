@@ -55,33 +55,28 @@ class random_noise(ABC):
 class SignalDenoisingUNet1D(nn.Module):
     def __init__(self):
         super(SignalDenoisingUNet1D, self).__init__()
-        self.enc1 = nn.Sequential(nn.Conv1d(1, 16, kernel_size=5, stride=2, padding=2), nn.ReLU())
-        self.enc2 = nn.Sequential(nn.Conv1d(16, 32, kernel_size=5, stride=2, padding=2), nn.ReLU())
-        self.dec2 = nn.Sequential(nn.ConvTranspose1d(32, 16, kernel_size=5, stride=2, padding=2, output_padding=1), nn.ReLU())
-        self.dec1 = nn.Sequential(nn.ConvTranspose1d(32, 1, kernel_size=5, stride=2, padding=2, output_padding=1), nn.Sigmoid())
+        # Matches kernel_size=9 updated architecture
+        self.enc1 = nn.Sequential(nn.Conv1d(1, 16, kernel_size=9, stride=2, padding=4), nn.BatchNorm1d(16), nn.ReLU())
+        self.enc2 = nn.Sequential(nn.Conv1d(16, 32, kernel_size=9, stride=2, padding=4), nn.BatchNorm1d(32), nn.ReLU())
+        
+        self.dec2 = nn.Sequential(nn.ConvTranspose1d(32, 16, kernel_size=9, stride=2, padding=4, output_padding=1), nn.BatchNorm1d(16), nn.ReLU())
+        self.dec1 = nn.ConvTranspose1d(32, 1, kernel_size=9, stride=2, padding=4, output_padding=1)
 
     def forward(self, x):
         e1 = self.enc1(x)
         e2 = self.enc2(e1)
         d2 = self.dec2(e2)
-        cat1 = torch.cat((d2, e1), dim=1)  # Skip Connection
+        cat1 = torch.cat((d2, e1), dim=1)
         return self.dec1(cat1)
 
 
 @st.cache_resource
 def load_trained_model():
     model = SignalDenoisingUNet1D()
+    weights_path = "unet_realdata_weights.pth"
     
-    # Locate directory of current deploy.py script
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    weights_path = os.path.join(script_dir, 'unet_realdata_weights.pth')
-    
-    if os.path.exists(weights_path):
-        model.load_state_dict(torch.load(weights_path, map_location=torch.device('cpu')))
-        st.sidebar.success("Loaded pre-trained U-Net weights!")
-    else:
-        st.sidebar.warning(f"`unet_realdata_weights.pth` not found at {weights_path}.")
-        
+    state_dict = torch.load(weights_path, map_location=torch.device('cpu'), weights_only=True)
+    model.load_state_dict(state_dict)
     model.eval()
     return model
 

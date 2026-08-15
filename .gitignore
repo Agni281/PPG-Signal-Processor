@@ -1,2 +1,3 @@
 # Ignore a data folder named "data" at the root level
 data/
+test_data/

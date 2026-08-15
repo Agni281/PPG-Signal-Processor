@@ -247,6 +247,9 @@ filtered = (filtered - np.min(filtered)) / (np.max(filtered) - np.min(filtered) 
 input_tensor = torch.FloatTensor(raw_noisy).unsqueeze(0).unsqueeze(0)
 with torch.no_grad():
     reconstructed = model(input_tensor).squeeze().numpy()
+    
+# Scale amplitude range to match [0, 1] range to avoid squashed waves
+reconstructed = (reconstructed - np.min(reconstructed)) / (np.max(reconstructed) - np.min(reconstructed) + 1e-8)
 
 sqi_score = calculate_sqi(reconstructed, fs=MODEL_FS)
 min_distance = max(1, int(MODEL_FS * 0.35))
